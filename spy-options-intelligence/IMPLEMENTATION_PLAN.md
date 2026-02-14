@@ -52,11 +52,12 @@
 - [x] Unit tests (28 tests)
 - [x] Integration test (1 day SPY data — 930 records, checkpoint/resume verified)
 
-## Step 8: Performance Monitoring (Week 3)
-- [ ] Implement src/monitoring/performance_monitor.py
-- [ ] Implement src/monitoring/error_aggregator.py
-- [ ] Configurable thresholds
-- [ ] Unit tests
+## Step 8: Performance Monitoring ✅
+- [x] Implement src/monitoring/performance_monitor.py
+- [x] Implement src/monitoring/error_aggregator.py
+- [x] Configurable thresholds (from config/settings.yaml monitoring.performance)
+- [x] Stale/hung operation detection (check_stale_operations)
+- [x] Unit tests (94 tests — overrun, stale, no-data, degradation, burst/recovery, read+write)
 
 ## Step 9: Unit Test Suite (Week 3)
 - [x] tests/unit/test_config_loader.py
@@ -138,4 +139,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total unit tests: 146 passing | Integration tests: 3 passing (live API) | Last updated: 2026-02-14**
+**Total unit tests: 240 passing | Integration tests: 3 passing (live API) | Last updated: 2026-02-14**
