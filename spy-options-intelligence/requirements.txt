@@ -1,0 +1,57 @@
+# SPY Options Intelligence - Phase 1 Requirements
+# Python 3.10+
+
+# Core Dependencies
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=12.0.0
+fastparquet>=2023.4.0
+
+# API Clients
+polygon-api-client>=1.12.0    # Polygon.io SDK
+requests>=2.31.0
+urllib3>=2.0.0
+websocket-client>=1.6.0        # WebSocket support
+aiohttp>=3.9.0                 # Async HTTP for streaming
+
+# Configuration
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Data Validation
+pydantic>=2.0.0
+jsonschema>=4.17.0
+
+# Database Support
+sqlalchemy>=2.0.0              # SQL abstraction layer
+psycopg2-binary>=2.9.0         # PostgreSQL
+pymysql>=1.1.0                 # MySQL
+
+# Logging
+loguru>=0.7.0
+
+# CLI
+click>=8.1.0
+tqdm>=4.65.0
+
+# Retry & Resilience
+tenacity>=8.2.0                # Retry logic with backoff
+
+# Testing
+pytest>=7.3.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+pytest-asyncio>=0.21.0         # Async test support
+requests-mock>=1.11.0
+
+# Development
+black>=23.3.0
+flake8>=6.0.0
+mypy>=1.3.0
+ipython>=8.14.0
+jupyter>=1.0.0
+
+# Utilities
+python-dateutil>=2.8.2
+pytz>=2023.3
+psutil>=5.9.0                  # Process monitoring
