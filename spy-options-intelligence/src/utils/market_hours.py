@@ -6,6 +6,10 @@ import pytz
 import requests
 from functools import lru_cache
 
+from src.utils.logger import get_logger
+
+logger = get_logger()
+
 
 class MarketHours:
     """
@@ -149,8 +153,7 @@ class MarketHours:
             
         except Exception as e:
             # Log error but don't fail - use empty holiday list as fallback
-            print(f"Warning: Failed to load market holidays from API: {e}")
-            print("Continuing with empty holiday list")
+            logger.warning(f"Failed to load market holidays from API: {e}. Continuing with empty holiday list")
             self.holidays = []
     
     def _parse_time(self, time_str: str) -> time:
