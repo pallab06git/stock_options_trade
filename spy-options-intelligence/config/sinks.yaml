@@ -1,0 +1,10 @@
+# Storage sink configuration
+
+sinks:
+  parquet:
+    enabled: true
+    base_path: "data/raw"
+    consolidated_path: "data/processed/consolidated"
+    compression: "snappy"       # snappy | zstd | gzip | none
+    row_group_size: 10000
+    max_file_size_mb: 256

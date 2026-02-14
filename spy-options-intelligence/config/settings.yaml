@@ -1,0 +1,49 @@
+# Master configuration for SPY Options Intelligence
+# All monitoring thresholds are configurable — zero hardcoded values.
+
+streaming:
+  market_hours:
+    timezone: "America/New_York"
+    active_days: [0, 1, 2, 3, 4]  # Mon-Fri (0=Mon, 6=Sun)
+    start_time: "09:30"
+    end_time: "16:00"
+  monitoring:
+    heartbeat_interval_seconds: 300   # 5 minutes
+    alert_threshold_seconds: 900      # 15 minutes
+
+monitoring:
+  performance:
+    commit_latency_seconds: 300           # Alert if batch write exceeds 5 min
+    throughput_min_records_per_sec: 100    # Alert if throughput drops below
+    memory_usage_mb_threshold: 1000       # Alert if process memory exceeds 1 GB
+    error_rate_percent: 1.0               # Alert if error rate exceeds 1%
+    error_window_minutes: 15              # Sliding window for error rate
+    heartbeat_check_interval_seconds: 60  # How often to check heartbeat staleness
+    metrics_dump_interval_minutes: 15     # How often to write metrics JSON
+    latency_window_size: 100              # Rolling window for p50/p95/p99
+
+historical:
+  backfill:
+    trading_days: 30
+    batch_size: 10000
+    # Alternatively, explicit date range:
+    # start_date: "2025-01-01"
+    # end_date: "2025-01-31"
+
+signal_validation:
+  prediction_window_minutes: 120
+  padding_strategy: "last_price"
+  alerts:
+    growth_threshold_pct: 20.0
+    confidence_threshold_pct: 90.0
+    sustained_window_minutes: 5
+    alert_levels:
+      HIGH:
+        growth_pct: 20.0
+        confidence_pct: 90.0
+      MEDIUM:
+        growth_pct: 15.0
+        confidence_pct: 80.0
+      LOW:
+        growth_pct: 10.0
+        confidence_pct: 70.0

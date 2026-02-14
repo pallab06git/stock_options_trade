@@ -1,0 +1,40 @@
+# Data source configuration — all sources use Polygon.io API
+
+polygon:
+  api_key: ${POLYGON_API_KEY}
+  base_url: "https://api.polygon.io"
+  feed: "delayed"  # "delayed" or "realtime"
+
+  rate_limiting:
+    total_requests_per_minute: 5  # Free tier total budget
+    allocation:
+      spy: 2       # 2 req/min for SPY historical
+      vix: 1       # 1 req/min for VIX historical
+      options: 1   # 1 req/min for options discovery
+      news: 1      # 1 req/min for news polling
+
+  spy:
+    ticker: "SPY"
+    multiplier: 1
+    timespan: "second"
+    limit_per_request: 50000
+
+  options:
+    underlying_ticker: "SPY"
+    strike_range_pct: 0.01       # +/-1%
+    max_contracts: 100
+    expiration_lookahead_days: 1  # Next-day expiry only
+
+  vix:
+    ticker: "I:VIX"
+    market: "indices"
+    multiplier: 1
+    timespan: "second"
+    limit_per_request: 50000
+
+  news:
+    tickers: ["SPY"]
+    sort: "published_utc"
+    order: "asc"
+    limit_per_request: 100
+    poll_interval_seconds: 300  # 5 min

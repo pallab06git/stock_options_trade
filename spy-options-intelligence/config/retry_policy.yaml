@@ -1,0 +1,19 @@
+# Retry and resilience configuration
+
+retry:
+  default:
+    max_attempts: 3
+    initial_wait_seconds: 1.0
+    max_wait_seconds: 30.0
+    exponential_base: 2
+    jitter: true
+    retry_on_status_codes: [500, 502, 503, 504, 429]
+
+  polygon:
+    max_attempts: 5
+    initial_wait_seconds: 1.0
+    max_wait_seconds: 60.0
+    exponential_base: 2
+    jitter: true
+    rate_limit_wait_seconds: 12  # 5 req/min = 12s between requests
+    retry_on_status_codes: [500, 502, 503, 504, 429]
