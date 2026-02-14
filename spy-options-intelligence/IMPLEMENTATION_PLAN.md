@@ -6,48 +6,51 @@
 ✅ Base classes (BaseSource, BaseSink)
 ✅ Utilities (market_hours.py, heartbeat_monitor.py)
 
-## Step 1: Configuration System (Week 1)
-- [ ] Implement src/utils/config_loader.py
-- [ ] Create config/settings.yaml
-- [ ] Create config/sources.yaml
-- [ ] Create config/sinks.yaml
-- [ ] Create config/retry_policy.yaml
-- [ ] Unit tests
+## Step 1: Configuration System ✅
+- [x] Implement src/utils/config_loader.py
+- [x] Create config/settings.yaml
+- [x] Create config/sources.yaml
+- [x] Create config/sinks.yaml
+- [x] Create config/retry_policy.yaml
+- [x] Unit tests (15 tests)
 
-## Step 2: Logging Infrastructure (Week 1)
-- [ ] Implement src/utils/logger.py
-- [ ] Security: credential redaction
-- [ ] Heartbeat integration
-- [ ] Unit tests
+## Step 2: Logging Infrastructure ✅
+- [x] Implement src/utils/logger.py
+- [x] Security: credential redaction
+- [x] Heartbeat integration
+- [x] Unit tests (14 tests)
 
-## Step 3: Retry & Connection Management (Week 1)
-- [ ] Implement src/utils/retry_handler.py
-- [ ] Implement src/utils/connection_manager.py
-- [ ] Unit tests
+## Step 3: Retry & Connection Management ✅
+- [x] Implement src/utils/retry_handler.py
+- [x] Implement src/utils/connection_manager.py
+- [x] Unit tests (32 tests)
 
-## Step 4: Polygon Client - SPY Historical (Week 2)
-- [ ] Implement src/data_sources/polygon_client.py
-- [ ] fetch_historical() for SPY
-- [ ] Pagination handling
-- [ ] Unit tests with mocks
+## Step 4: Polygon Client - SPY Historical ✅
+- [x] Implement src/data_sources/polygon_client.py
+- [x] fetch_historical() for SPY
+- [x] Pagination handling
+- [x] Unit tests with mocks (18 tests)
 
-## Step 5: Parquet Storage (Week 2)
-- [ ] Implement src/sinks/parquet_sink.py
-- [ ] Date partitioning
-- [ ] Compression (Snappy)
-- [ ] Unit tests
+## Step 5: Parquet Storage ✅
+- [x] Implement src/sinks/parquet_sink.py
+- [x] Date partitioning
+- [x] Compression (Snappy)
+- [x] Unit tests (14 tests)
 
-## Step 6: Data Validation (Week 2)
-- [ ] Implement src/processing/validator.py
-- [ ] Implement src/processing/deduplicator.py
-- [ ] Schema validation
-- [ ] Unit tests
+## Step 6: Data Validation ✅
+- [x] Implement src/processing/validator.py
+- [x] Implement src/processing/deduplicator.py
+- [x] Schema validation
+- [x] Unit tests (23 tests)
 
-## Step 7: Historical Runner (Week 3)
-- [ ] Implement src/orchestrator/historical_runner.py
-- [ ] CLI with click
-- [ ] Checkpoint/resume
-- [ ] Integration test (1 day SPY data)
+## Step 7: Historical Runner ✅
+- [x] Implement src/orchestrator/historical_runner.py
+- [x] Batch pipeline: Polygon → Validator → Deduplicator → Parquet
+- [x] Date-by-date iteration with configurable batch_size
+- [x] Checkpoint/resume (JSON-based, skips completed dates)
+- [x] CLI with click (src/cli.py — backfill command)
+- [x] Unit tests (28 tests)
+- [x] Integration test (1 day SPY data — 930 records, checkpoint/resume verified)
 
 ## Step 8: Performance Monitoring (Week 3)
 - [ ] Implement src/monitoring/performance_monitor.py
@@ -56,9 +59,9 @@
 - [ ] Unit tests
 
 ## Step 9: Unit Test Suite (Week 3)
-- [ ] tests/unit/test_config_loader.py
-- [ ] tests/unit/test_polygon_client.py
-- [ ] tests/unit/test_parquet_sink.py
+- [x] tests/unit/test_config_loader.py
+- [x] tests/unit/test_polygon_client.py
+- [x] tests/unit/test_parquet_sink.py
 - [ ] Coverage >80%
 
 ## Step 10: Real-time SPY Streaming (Week 4)
@@ -133,3 +136,6 @@
 - [ ] Signal validator implementation
 - [ ] MLflow integration
 - [ ] Backtesting framework
+
+---
+**Total unit tests: 146 passing | Integration tests: 3 passing (live API) | Last updated: 2026-02-14**

@@ -4,6 +4,7 @@
 
 """Unit tests for HistoricalRunner."""
 
+import json
 import pytest
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch, call
@@ -106,6 +107,10 @@ def _build_runner(config):
             "src.orchestrator.historical_runner", fromlist=["HistoricalRunner"]
         ).HistoricalRunner(config)
 
+    # Disable checkpoint writes by default (no filesystem in unit tests)
+    runner._save_checkpoint = MagicMock()
+    runner._load_checkpoint = MagicMock(return_value=set())
+
     return runner
 
 
@@ -147,6 +152,24 @@ class TestResolveDateRange:
         runner = _build_runner(config)
 
         assert runner.trading_days == 30
+
+
+# ---------------------------------------------------------------------------
+# Test: Date Range List
+# ---------------------------------------------------------------------------
+
+class TestDateRangeList:
+    """Tests for _date_range_list()."""
+
+    def test_single_date(self):
+        from src.orchestrator.historical_runner import HistoricalRunner
+        result = HistoricalRunner._date_range_list("2025-01-27", "2025-01-27")
+        assert result == ["2025-01-27"]
+
+    def test_multi_date(self):
+        from src.orchestrator.historical_runner import HistoricalRunner
+        result = HistoricalRunner._date_range_list("2025-01-27", "2025-01-29")
+        assert result == ["2025-01-27", "2025-01-28", "2025-01-29"]
 
 
 # ---------------------------------------------------------------------------
@@ -199,9 +222,9 @@ class TestRun:
 
         day1 = [_make_record(_TS_DAY1_A), _make_record(_TS_DAY1_B)]
         day2 = [_make_record(_TS_DAY2_A), _make_record(_TS_DAY2_B)]
-        runner.client.fetch_historical.return_value = iter(day1 + day2)
 
-        # validate_batch passes everything through
+        # fetch_historical is called per-date; set side_effect for each call
+        runner.client.fetch_historical.side_effect = [iter(day1), iter(day2)]
         runner.validator.validate_batch.side_effect = lambda recs: (recs, [])
         runner.deduplicator.deduplicate_batch.side_effect = lambda recs: recs
 
@@ -241,6 +264,15 @@ class TestRun:
         runner.sink.disconnect.assert_called_once()
         runner.connection_manager.close.assert_called_once()
 
+    def test_dates_skipped_zero_when_no_resume(self):
+        """Without resume, dates_skipped should be 0."""
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-27")
+        runner = _build_runner(config)
+        runner.client.fetch_historical.return_value = iter([])
+
+        stats = runner.run()
+        assert stats["dates_skipped"] == 0
+
 
 # ---------------------------------------------------------------------------
 # Test: Batch Flushing at batch_size Threshold
@@ -250,7 +282,7 @@ class TestBatchFlushing:
     """Tests for batch_size threshold flushing."""
 
     def test_flush_at_batch_size(self):
-        """When buffer reaches batch_size, flush without waiting for date change."""
+        """When buffer reaches batch_size, flush without waiting for date end."""
         config = _make_config(
             start_date="2025-01-27", end_date="2025-01-27", batch_size=2
         )
@@ -286,12 +318,8 @@ class TestBatchFlushing:
 
         stats = runner.run()
 
-        # batch_size flush empties buffer, final "if buffer" is False → 1 call
-        # Actually: batch_size hit → flush (buffer cleared), then loop ends,
-        # buffer is empty so no final flush. But dates_processed incremented
-        # only on date boundary or final flush — here buffer is empty at end
-        # so dates_processed comes from the batch_size flush path (no increment there)
-        # and no final flush. Let's verify:
+        # batch_size hit → flush (buffer cleared), then loop ends,
+        # buffer is empty so no final flush → 1 write_batch call
         assert runner.sink.write_batch.call_count == 1
         assert stats["total_fetched"] == 2
         assert stats["total_written"] == 2
@@ -302,24 +330,26 @@ class TestBatchFlushing:
 # ---------------------------------------------------------------------------
 
 class TestDateBoundary:
-    """Tests for deduplicator reset on date change."""
+    """Tests for deduplicator reset on each date."""
 
-    def test_deduplicator_resets_on_date_change(self):
-        """Deduplicator.reset() is called when the date partition changes."""
+    def test_deduplicator_resets_per_date(self):
+        """Deduplicator.reset() is called once per date in the range."""
         config = _make_config(start_date="2025-01-27", end_date="2025-01-28")
         runner = _build_runner(config)
 
-        records = [_make_record(_TS_DAY1_A), _make_record(_TS_DAY2_A)]
-        runner.client.fetch_historical.return_value = iter(records)
+        day1 = [_make_record(_TS_DAY1_A)]
+        day2 = [_make_record(_TS_DAY2_A)]
+        runner.client.fetch_historical.side_effect = [iter(day1), iter(day2)]
         runner.validator.validate_batch.side_effect = lambda recs: (recs, [])
         runner.deduplicator.deduplicate_batch.side_effect = lambda recs: recs
 
         runner.run()
 
-        runner.deduplicator.reset.assert_called_once()
+        # reset() called at the start of each date iteration
+        assert runner.deduplicator.reset.call_count == 2
 
-    def test_no_reset_within_same_date(self):
-        """Deduplicator is NOT reset when all records are from the same date."""
+    def test_deduplicator_resets_for_single_date(self):
+        """Deduplicator is reset even for a single date."""
         config = _make_config(start_date="2025-01-27", end_date="2025-01-27")
         runner = _build_runner(config)
 
@@ -330,7 +360,7 @@ class TestDateBoundary:
 
         runner.run()
 
-        runner.deduplicator.reset.assert_not_called()
+        runner.deduplicator.reset.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -489,3 +519,125 @@ class TestProcessBatch:
 
         assert result["written"] == 0
         runner.sink.write_batch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test: Checkpoint/Resume
+# ---------------------------------------------------------------------------
+
+class TestCheckpoint:
+    """Tests for checkpoint save/load and resume logic."""
+
+    def test_checkpoint_saved_after_each_date(self):
+        """_save_checkpoint is called once per date processed."""
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-28")
+        runner = _build_runner(config)
+
+        day1 = [_make_record(_TS_DAY1_A)]
+        day2 = [_make_record(_TS_DAY2_A)]
+        runner.client.fetch_historical.side_effect = [iter(day1), iter(day2)]
+        runner.validator.validate_batch.side_effect = lambda recs: (recs, [])
+        runner.deduplicator.deduplicate_batch.side_effect = lambda recs: recs
+
+        runner.run()
+
+        assert runner._save_checkpoint.call_count == 2
+        runner._save_checkpoint.assert_any_call("2025-01-27", "2025-01-27", "2025-01-28")
+        runner._save_checkpoint.assert_any_call("2025-01-28", "2025-01-27", "2025-01-28")
+
+    def test_resume_skips_completed_dates(self):
+        """With resume=True and checkpoint present, completed dates are skipped."""
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-28")
+        runner = _build_runner(config)
+
+        # Checkpoint says day1 is already done
+        runner._load_checkpoint.return_value = {"2025-01-27"}
+
+        day2 = [_make_record(_TS_DAY2_A)]
+        runner.client.fetch_historical.return_value = iter(day2)
+        runner.validator.validate_batch.side_effect = lambda recs: (recs, [])
+        runner.deduplicator.deduplicate_batch.side_effect = lambda recs: recs
+
+        stats = runner.run(resume=True)
+
+        # Only day2 should have been fetched
+        assert stats["total_fetched"] == 1
+        assert stats["dates_processed"] == 1
+        assert stats["dates_skipped"] == 1
+        # fetch_historical should only be called once (for day2)
+        runner.client.fetch_historical.assert_called_once_with("2025-01-28", "2025-01-28")
+
+    def test_resume_no_checkpoint_file(self):
+        """Resume with no checkpoint file processes all dates (same as fresh run)."""
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-27")
+        runner = _build_runner(config)
+
+        # _load_checkpoint returns empty set (default from _build_runner)
+        records = [_make_record(_TS_DAY1_A)]
+        runner.client.fetch_historical.return_value = iter(records)
+        runner.validator.validate_batch.return_value = (records, [])
+        runner.deduplicator.deduplicate_batch.return_value = records
+
+        stats = runner.run(resume=True)
+
+        assert stats["total_fetched"] == 1
+        assert stats["dates_processed"] == 1
+        assert stats["dates_skipped"] == 0
+
+    def test_checkpoint_file_format(self, tmp_path):
+        """Checkpoint JSON has expected structure with completed_dates and last_updated."""
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-28")
+
+        with patch("src.orchestrator.historical_runner.ConnectionManager"), \
+             patch("src.orchestrator.historical_runner.PolygonSPYClient"), \
+             patch("src.orchestrator.historical_runner.RecordValidator"), \
+             patch("src.orchestrator.historical_runner.Deduplicator"), \
+             patch("src.orchestrator.historical_runner.ParquetSink"):
+
+            runner = __import__(
+                "src.orchestrator.historical_runner", fromlist=["HistoricalRunner"]
+            ).HistoricalRunner(config)
+
+        # Point checkpoint dir to tmp_path
+        runner._checkpoint_dir = tmp_path
+
+        # Save a checkpoint using the real method
+        runner._save_checkpoint("2025-01-27", "2025-01-27", "2025-01-28")
+
+        # Verify file exists and format
+        path = tmp_path / "checkpoint_2025-01-27_2025-01-28.json"
+        assert path.exists()
+
+        data = json.loads(path.read_text())
+        assert "completed_dates" in data
+        assert "last_updated" in data
+        assert "2025-01-27" in data["completed_dates"]
+
+        # Save another date
+        runner._save_checkpoint("2025-01-28", "2025-01-27", "2025-01-28")
+        data = json.loads(path.read_text())
+        assert data["completed_dates"] == ["2025-01-27", "2025-01-28"]
+
+    def test_load_checkpoint_returns_saved_dates(self, tmp_path):
+        """_load_checkpoint returns the set of dates saved by _save_checkpoint."""
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-28")
+
+        with patch("src.orchestrator.historical_runner.ConnectionManager"), \
+             patch("src.orchestrator.historical_runner.PolygonSPYClient"), \
+             patch("src.orchestrator.historical_runner.RecordValidator"), \
+             patch("src.orchestrator.historical_runner.Deduplicator"), \
+             patch("src.orchestrator.historical_runner.ParquetSink"):
+
+            runner = __import__(
+                "src.orchestrator.historical_runner", fromlist=["HistoricalRunner"]
+            ).HistoricalRunner(config)
+
+        runner._checkpoint_dir = tmp_path
+
+        # No checkpoint yet
+        assert runner._load_checkpoint("2025-01-27", "2025-01-28") == set()
+
+        # Save and reload
+        runner._save_checkpoint("2025-01-27", "2025-01-27", "2025-01-28")
+        loaded = runner._load_checkpoint("2025-01-27", "2025-01-28")
+        assert loaded == {"2025-01-27"}
