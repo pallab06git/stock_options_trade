@@ -1,0 +1,5 @@
+[
+  {"timestamp": 1704067200000, "open": 450.10, "high": 450.50, "low": 449.90, "close": 450.30, "volume": 1500, "vwap": 450.20, "transactions": 25, "source": "spy"},
+  {"timestamp": 1704067260000, "open": 450.30, "high": 450.60, "low": 450.10, "close": 450.45, "volume": 1200, "vwap": 450.35, "transactions": 18, "source": "spy"},
+  {"timestamp": 1704067320000, "open": 450.45, "high": 450.70, "low": 450.20, "close": 450.55, "volume": 1800, "vwap": 450.40, "transactions": 30, "source": "spy"}
+]
