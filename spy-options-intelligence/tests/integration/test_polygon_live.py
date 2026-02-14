@@ -1,3 +1,7 @@
+# © 2026 Pallab Basu Roy. All rights reserved.
+# This source code is proprietary and confidential.
+# Unauthorized copying, modification, or commercial use is strictly prohibited.
+
 """Integration tests for PolygonSPYClient against live Polygon API.
 
 Requires a valid POLYGON_API_KEY in .env file.

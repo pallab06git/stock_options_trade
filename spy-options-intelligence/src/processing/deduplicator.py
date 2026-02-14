@@ -1,3 +1,7 @@
+# © 2026 Pallab Basu Roy. All rights reserved.
+# This source code is proprietary and confidential.
+# Unauthorized copying, modification, or commercial use is strictly prohibited.
+
 """In-memory deduplication for streaming and batch data records.
 
 Tracks seen keys to filter duplicate records before they reach storage.

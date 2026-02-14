@@ -1,3 +1,7 @@
+# © 2026 Pallab Basu Roy. All rights reserved.
+# This source code is proprietary and confidential.
+# Unauthorized copying, modification, or commercial use is strictly prohibited.
+
 """Polygon SDK session management with unified rate limiting.
 
 Provides a single shared RESTClient instance and a token bucket rate

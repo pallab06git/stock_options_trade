@@ -1,3 +1,7 @@
+# © 2026 Pallab Basu Roy. All rights reserved.
+# This source code is proprietary and confidential.
+# Unauthorized copying, modification, or commercial use is strictly prohibited.
+
 """Integration tests for validator and deduplicator with live Polygon data.
 
 Fetches real SPY data from Polygon, validates with RecordValidator,

@@ -1,3 +1,7 @@
+# © 2026 Pallab Basu Roy. All rights reserved.
+# This source code is proprietary and confidential.
+# Unauthorized copying, modification, or commercial use is strictly prohibited.
+
 """Abstract base class for all data sources."""
 
 from abc import ABC, abstractmethod
