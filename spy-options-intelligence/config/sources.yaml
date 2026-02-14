@@ -16,7 +16,7 @@ polygon:
   spy:
     ticker: "SPY"
     multiplier: 1
-    timespan: "second"
+    timespan: "minute"          # "minute" for free tier, "second" with paid plan
     limit_per_request: 50000
 
   options:
@@ -29,7 +29,7 @@ polygon:
     ticker: "I:VIX"
     market: "indices"
     multiplier: 1
-    timespan: "second"
+    timespan: "minute"          # "minute" for free tier, "second" with paid plan
     limit_per_request: 50000
 
   news:
