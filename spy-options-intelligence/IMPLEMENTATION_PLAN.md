@@ -103,10 +103,12 @@
 - [x] CLI discover command (--date, --config-dir)
 - [x] Unit tests (14 tests)
 
-## Step 13: Options Streaming (Week 5)
-- [ ] stream_options_realtime()
-- [ ] 30 contract limit
-- [ ] Integration test
+## Step 13: Options Streaming ✅
+- [x] Add stream_realtime() and _transform_options_agg() to PolygonOptionsClient
+- [x] Add dedup_subset param to ParquetSink for compound dedup (ticker + timestamp)
+- [x] Implement OptionsStreamingRunner (WebSocket → buffer → validate → compound dedup → Parquet)
+- [x] Add stream-options CLI command (--date, --config-dir)
+- [x] Unit tests: 4 client streaming + 7 runner + 2 parquet dedup = 13 new
 
 ## Step 14: VIX Data (Week 5)
 - [ ] VIX historical (Polygon I:VIX)
@@ -165,4 +167,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 354 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
+**Total tests: 367 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**

@@ -5,9 +5,10 @@
 """Unit tests for PolygonOptionsClient."""
 
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -344,3 +345,158 @@ class TestRateLimit:
         client.discover_contracts("2026-02-09", 428.50)
 
         cm.acquire_rate_limit.assert_called_with(source="options")
+
+
+# ---------------------------------------------------------------------------
+# Tests: streaming
+# ---------------------------------------------------------------------------
+
+
+def _make_options_agg(
+    symbol="O:SPY260210C00430000",
+    timestamp=1704067200000,
+    open_=5.10,
+    high=5.20,
+    low=5.00,
+    close=5.15,
+    volume=100,
+    vwap=5.12,
+    transactions=10,
+):
+    """Create a mock Polygon options Agg message."""
+    return SimpleNamespace(
+        symbol=symbol,
+        timestamp=timestamp,
+        open=open_,
+        high=high,
+        low=low,
+        close=close,
+        volume=volume,
+        vwap=vwap,
+        transactions=transactions,
+    )
+
+
+class TestStreamRealtime:
+
+    def test_stream_realtime_loads_contracts(self, tmp_path, monkeypatch):
+        """stream_realtime calls load_contracts with the given date."""
+        config = _make_config()
+        cm = _make_connection_manager()
+        client = PolygonOptionsClient(config, cm)
+
+        monkeypatch.chdir(tmp_path)
+
+        # Create contract file
+        contracts_dir = tmp_path / "data" / "raw" / "options" / "contracts"
+        contracts_dir.mkdir(parents=True)
+        contracts = [{"ticker": "O:SPY260210C00430000"}]
+        with open(contracts_dir / "2026-02-09_contracts.json", "w") as f:
+            json.dump(contracts, f)
+
+        # Mock WebSocket to stop immediately
+        stop = threading.Event()
+        stop.set()
+        list(client.stream_realtime(date="2026-02-09", stop_event=stop))
+
+        # If it got here without error, load_contracts succeeded
+
+    def test_stream_realtime_subscribes_to_contracts(self, tmp_path, monkeypatch):
+        """WebSocket subscribes with AM.{ticker} channels."""
+        config = _make_config()
+        cm = _make_connection_manager()
+        client = PolygonOptionsClient(config, cm)
+
+        monkeypatch.chdir(tmp_path)
+        contracts_dir = tmp_path / "data" / "raw" / "options" / "contracts"
+        contracts_dir.mkdir(parents=True)
+        contracts = [
+            {"ticker": "O:SPY260210C00430000"},
+            {"ticker": "O:SPY260210P00429000"},
+        ]
+        with open(contracts_dir / "2026-02-09_contracts.json", "w") as f:
+            json.dump(contracts, f)
+
+        mock_ws = MagicMock()
+        stop = threading.Event()
+
+        # Make run() set stop_event so the thread exits cleanly
+        def fake_run(handle_msg):
+            stop.set()
+
+        mock_ws.run.side_effect = fake_run
+        cm.get_ws_client.return_value = mock_ws
+
+        list(client.stream_realtime(date="2026-02-09", stop_event=stop))
+
+        mock_ws.subscribe.assert_called_once_with(
+            "AM.O:SPY260210C00430000", "AM.O:SPY260210P00429000"
+        )
+
+    def test_stream_realtime_yields_records(self, tmp_path, monkeypatch):
+        """Transformed records are yielded from the generator."""
+        config = _make_config()
+        cm = _make_connection_manager()
+        client = PolygonOptionsClient(config, cm)
+
+        monkeypatch.chdir(tmp_path)
+        contracts_dir = tmp_path / "data" / "raw" / "options" / "contracts"
+        contracts_dir.mkdir(parents=True)
+        contracts = [{"ticker": "O:SPY260210C00430000"}]
+        with open(contracts_dir / "2026-02-09_contracts.json", "w") as f:
+            json.dump(contracts, f)
+
+        agg = _make_options_agg()
+        stop = threading.Event()
+
+        mock_ws = MagicMock()
+        call_count = {"n": 0}
+
+        def fake_run(handle_msg):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                handle_msg([agg])
+                # Pause so main thread can read from queue before second call
+                import time
+                time.sleep(0.15)
+            else:
+                stop.set()
+
+        mock_ws.run.side_effect = fake_run
+        cm.get_ws_client.return_value = mock_ws
+
+        records = list(client.stream_realtime(date="2026-02-09", stop_event=stop))
+
+        assert len(records) == 1
+        assert records[0]["ticker"] == "O:SPY260210C00430000"
+        assert records[0]["source"] == "options"
+        assert records[0]["timestamp"] == 1704067200000
+
+    def test_transform_options_agg(self):
+        """_transform_options_agg maps fields correctly."""
+        agg = _make_options_agg(
+            symbol="O:SPY260210C00430000",
+            timestamp=1704067200000,
+            open_=5.10,
+            high=5.20,
+            low=5.00,
+            close=5.15,
+            volume=100,
+            vwap=5.12,
+            transactions=10,
+        )
+
+        result = PolygonOptionsClient._transform_options_agg(agg)
+
+        assert result == {
+            "timestamp": 1704067200000,
+            "open": 5.10,
+            "high": 5.20,
+            "low": 5.00,
+            "close": 5.15,
+            "volume": 100,
+            "vwap": 5.12,
+            "transactions": 10,
+            "ticker": "O:SPY260210C00430000",
+            "source": "options",
+        }

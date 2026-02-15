@@ -29,7 +29,7 @@ class ParquetSink(BaseSink):
     File layout: {base_path}/{source}/{YYYY-MM-DD}.parquet
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], dedup_subset: List[str] = None):
         super().__init__(config)
         self.sink_type = SinkType.PARQUET
 
@@ -37,6 +37,7 @@ class ParquetSink(BaseSink):
         self.base_path = Path(parquet_config.get("base_path", "data/raw"))
         self.compression = parquet_config.get("compression", "snappy")
         self.row_group_size = parquet_config.get("row_group_size", 10000)
+        self.dedup_subset = dedup_subset or ["timestamp"]
 
     def connect(self) -> None:
         """Ensure the base directory exists."""
@@ -78,7 +79,7 @@ class ParquetSink(BaseSink):
         if path.exists():
             existing_df = pd.read_parquet(path)
             merged_df = pd.concat([existing_df, new_df], ignore_index=True)
-            merged_df = merged_df.drop_duplicates(subset=["timestamp"], keep="last")
+            merged_df = merged_df.drop_duplicates(subset=self.dedup_subset, keep="last")
             merged_df = merged_df.sort_values("timestamp").reset_index(drop=True)
         else:
             merged_df = new_df

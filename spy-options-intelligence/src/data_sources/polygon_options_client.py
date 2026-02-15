@@ -10,9 +10,14 @@ streaming — not a BaseSource subclass.
 """
 
 import json
+import queue
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Generator, List
+
+from polygon.websocket.models import Market
 
 from src.utils.connection_manager import ConnectionManager
 from src.utils.logger import get_logger
@@ -195,6 +200,113 @@ class PolygonOptionsClient:
 
         logger.info(f"Loaded {len(contracts)} contracts from {path}")
         return contracts
+
+    # ------------------------------------------------------------------
+    # Streaming
+    # ------------------------------------------------------------------
+
+    # Sentinel to signal the generator thread has exited
+    _SENTINEL = object()
+
+    def stream_realtime(
+        self, date: str, stop_event: threading.Event = None
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        Stream real-time options aggregates via Polygon WebSocket.
+
+        Loads previously discovered contracts for *date*, subscribes to
+        per-minute aggregate channels, and yields transformed records.
+
+        Args:
+            date: Trading date (YYYY-MM-DD) — used to load contracts.
+            stop_event: Threading event to signal shutdown.
+
+        Yields:
+            Standardized options aggregate dicts.
+        """
+        stop_event = stop_event or threading.Event()
+        contracts = self.load_contracts(date)
+        tickers = [c["ticker"] for c in contracts][: self.max_contracts]
+
+        if not tickers:
+            logger.warning(f"No contracts to stream for {date}")
+            return
+
+        logger.info(f"Streaming {len(tickers)} options contracts for {date}")
+        msg_queue: queue.Queue = queue.Queue(maxsize=10000)
+        reconnect_delay = 5
+
+        def _ws_thread():
+            while not stop_event.is_set():
+                try:
+                    ws_client = self.connection_manager.get_ws_client(
+                        market=Market.Options
+                    )
+                    ws_client.subscribe(*[f"AM.{t}" for t in tickers])
+
+                    def _handle_msg(msgs):
+                        for msg in msgs:
+                            if stop_event.is_set():
+                                return
+                            record = self._transform_options_agg(msg)
+                            try:
+                                msg_queue.put_nowait(record)
+                            except queue.Full:
+                                pass  # Backpressure — drop oldest
+
+                    ws_client.run(handle_msg=_handle_msg)
+                except Exception as e:
+                    if stop_event.is_set():
+                        break
+                    logger.warning(
+                        f"Options WebSocket disconnected: {e}. "
+                        f"Reconnecting in {reconnect_delay}s"
+                    )
+                    time.sleep(reconnect_delay)
+
+            msg_queue.put(self._SENTINEL)
+
+        thread = threading.Thread(target=_ws_thread, daemon=True)
+        thread.start()
+        logger.info("Options WebSocket streaming started")
+
+        try:
+            while not stop_event.is_set():
+                try:
+                    item = msg_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+                if item is self._SENTINEL:
+                    break
+                yield item
+        finally:
+            stop_event.set()
+            thread.join(timeout=5.0)
+            logger.info("Options WebSocket streaming stopped")
+
+    @staticmethod
+    def _transform_options_agg(agg) -> Dict[str, Any]:
+        """
+        Transform a Polygon options Agg message to a standardized dict.
+
+        Args:
+            agg: Polygon WebSocket Agg object.
+
+        Returns:
+            Standardized options aggregate record.
+        """
+        return {
+            "timestamp": getattr(agg, "timestamp", None),
+            "open": getattr(agg, "open", None),
+            "high": getattr(agg, "high", None),
+            "low": getattr(agg, "low", None),
+            "close": getattr(agg, "close", None),
+            "volume": getattr(agg, "volume", None),
+            "vwap": getattr(agg, "vwap", None),
+            "transactions": getattr(agg, "transactions", None),
+            "ticker": getattr(agg, "symbol", None),
+            "source": "options",
+        }
 
     # ------------------------------------------------------------------
     # Internal

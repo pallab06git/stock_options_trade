@@ -153,6 +153,46 @@ def stream(config_dir, ticker):
         sys.exit(1)
 
 
+@cli.command("stream-options")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--date",
+    required=True,
+    help="Trading date for contract loading (YYYY-MM-DD).",
+)
+def stream_options(config_dir, date):
+    """Stream real-time options data via WebSocket."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.orchestrator.options_streaming_runner import OptionsStreamingRunner
+
+        runner = OptionsStreamingRunner(config, date=date)
+        click.echo(f"Starting real-time options stream for {date}...")
+        stats = runner.run()
+
+        click.echo(f"\n--- Options Streaming Summary ---")
+        click.echo(f"Status:            {stats.get('status', 'unknown')}")
+        click.echo(f"Messages received: {stats['messages_received']}")
+        click.echo(f"Messages written:  {stats['messages_written']}")
+        click.echo(f"Invalid:           {stats['messages_invalid']}")
+        click.echo(f"Duplicates:        {stats['messages_duplicates']}")
+        click.echo(f"Batches flushed:   {stats['batches_flushed']}")
+
+    except KeyboardInterrupt:
+        click.echo("\nStream interrupted by user.")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 @cli.command("backfill-all")
 @click.option(
     "--config-dir",
