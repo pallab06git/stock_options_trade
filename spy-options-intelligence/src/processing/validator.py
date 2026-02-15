@@ -22,6 +22,12 @@ _SCHEMAS: Dict[str, Dict[str, Any]] = {
         "positive_timestamp": True,
         "expected_source": "spy",
     },
+    "equity": {
+        "required_fields": {"timestamp", "open", "high", "low", "close", "volume", "vwap", "source"},
+        "positive_fields": {"open", "high", "low", "close", "volume"},
+        "positive_timestamp": True,
+        "expected_source": None,  # Accept any source label for equities
+    },
     "options": {
         "required_fields": {"timestamp", "open", "high", "low", "close", "volume", "source"},
         "positive_fields": {"open", "high", "low", "close"},
@@ -55,7 +61,7 @@ class RecordValidator:
     def __init__(self, source: str):
         """
         Args:
-            source: Source type key (spy, options, vix, news).
+            source: Source type key (spy, equity, options, vix, news).
 
         Raises:
             ValueError: If source is not a known schema.
@@ -64,6 +70,23 @@ class RecordValidator:
             raise ValueError(f"Unknown source '{source}'. Valid: {sorted(_SCHEMAS.keys())}")
         self.source = source
         self._schema = _SCHEMAS[source]
+        self._ticker: str | None = None
+
+    @classmethod
+    def for_equity(cls, ticker: str) -> "RecordValidator":
+        """Create a validator for any equity ticker.
+
+        Uses the 'equity' schema which accepts any source label.
+
+        Args:
+            ticker: Ticker symbol for log context (e.g. "SPY", "TSLA").
+
+        Returns:
+            RecordValidator configured for equity validation.
+        """
+        validator = cls("equity")
+        validator._ticker = ticker
+        return validator
 
     def validate(self, record: Dict[str, Any]) -> bool:
         """

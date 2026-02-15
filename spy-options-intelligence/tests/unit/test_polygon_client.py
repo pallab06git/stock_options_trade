@@ -2,14 +2,14 @@
 # This source code is proprietary and confidential.
 # Unauthorized copying, modification, or commercial use is strictly prohibited.
 
-"""Unit tests for PolygonSPYClient."""
+"""Unit tests for PolygonEquityClient."""
 
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 from types import SimpleNamespace
 
 from src.data_sources.base_source import ExecutionMode
-from src.data_sources.polygon_client import PolygonSPYClient
+from src.data_sources.polygon_client import PolygonEquityClient, PolygonSPYClient
 from src.utils.retry_handler import RetryableError
 
 
@@ -35,9 +35,14 @@ def _make_agg(timestamp=1704067200000, open_=450.10, high=450.50,
     return agg
 
 
-def _make_config():
-    """Create a minimal config for PolygonSPYClient."""
-    return {
+def _make_config(ticker="SPY", use_equities=False):
+    """Create a minimal config for PolygonEquityClient.
+
+    Args:
+        ticker: Ticker symbol for config.
+        use_equities: If True, use polygon.equities section instead of polygon.spy.
+    """
+    config = {
         "polygon": {
             "api_key": "pk_test_12345678",
             "spy": {
@@ -66,6 +71,15 @@ def _make_config():
             },
         },
     }
+    if use_equities:
+        config["polygon"]["equities"] = {
+            ticker: {
+                "multiplier": 1,
+                "timespan": "second",
+                "limit_per_request": 50000,
+            }
+        }
+    return config
 
 
 def _make_connection_manager():
@@ -86,7 +100,7 @@ class TestConnect:
     def test_connect_sets_mode(self):
         config = _make_config()
         cm = _make_connection_manager()
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
 
         client.connect()
 
@@ -102,7 +116,7 @@ class TestFetchHistorical:
         aggs = [_make_agg(timestamp=1704067200000 + i * 1000) for i in range(3)]
         cm.get_rest_client.return_value.get_aggs.return_value = aggs
 
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
         records = list(client.fetch_historical("2024-01-01", "2024-01-01"))
 
         assert len(records) == 3
@@ -117,7 +131,7 @@ class TestFetchHistorical:
         aggs = [_make_agg(), _make_agg(timestamp=1704067201000)]
         cm.get_rest_client.return_value.get_aggs.return_value = aggs
 
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
         records = list(client.fetch_historical("2024-01-01", "2024-01-03"))
 
         # 3 dates × 2 records each
@@ -128,7 +142,7 @@ class TestFetchHistorical:
         cm = _make_connection_manager()
         cm.get_rest_client.return_value.get_aggs.return_value = []
 
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
         records = list(client.fetch_historical("2024-01-01", "2024-01-01"))
 
         assert len(records) == 0
@@ -151,7 +165,7 @@ class TestFetchHistorical:
 
         cm.get_rest_client.return_value.get_aggs.side_effect = side_effect
 
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
         records = list(client.fetch_historical("2024-01-01", "2024-01-02"))
 
         # Date 1 failed (3 retries exhausted), date 2 succeeded with 1 record
@@ -162,7 +176,7 @@ class TestFetchHistorical:
         cm = _make_connection_manager()
         cm.get_rest_client.return_value.get_aggs.return_value = [_make_agg()]
 
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
         list(client.fetch_historical("2024-01-01", "2024-01-03"))
 
         # Rate limit should be acquired once per date (3 dates)
@@ -185,7 +199,7 @@ class TestFetchHistorical:
 
         cm.get_rest_client.return_value.get_aggs.side_effect = side_effect
 
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
         records = list(client.fetch_historical("2024-01-01", "2024-01-01"))
 
         assert len(records) == 1
@@ -197,7 +211,7 @@ class TestTransformAgg:
     def test_transform_agg(self):
         config = _make_config()
         cm = _make_connection_manager()
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
 
         agg = _make_agg(
             timestamp=1704067200000,
@@ -230,7 +244,7 @@ class TestValidateRecord:
     def test_valid_record(self):
         config = _make_config()
         cm = _make_connection_manager()
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
 
         record = {
             "timestamp": 1704067200000,
@@ -247,7 +261,7 @@ class TestValidateRecord:
     def test_missing_field(self):
         config = _make_config()
         cm = _make_connection_manager()
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
 
         record = {
             "timestamp": 1704067200000,
@@ -262,7 +276,7 @@ class TestValidateRecord:
     def test_negative_price(self):
         config = _make_config()
         cm = _make_connection_manager()
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
 
         record = {
             "timestamp": 1704067200000,
@@ -276,7 +290,7 @@ class TestValidateRecord:
     def test_zero_timestamp(self):
         config = _make_config()
         cm = _make_connection_manager()
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
 
         record = {
             "timestamp": 0,
@@ -290,7 +304,7 @@ class TestValidateRecord:
     def test_none_field(self):
         config = _make_config()
         cm = _make_connection_manager()
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
 
         record = {
             "timestamp": 1704067200000,
@@ -307,7 +321,64 @@ class TestStreamRealtime:
     def test_not_implemented(self):
         config = _make_config()
         cm = _make_connection_manager()
-        client = PolygonSPYClient(config, cm)
+        client = PolygonEquityClient(config, cm)
 
         with pytest.raises(NotImplementedError, match="Step 10"):
             next(client.stream_realtime())
+
+
+# ---------------------------------------------------------------------------
+# New tests: Multi-ticker support
+# ---------------------------------------------------------------------------
+
+
+class TestMultiTicker:
+    """Tests for ticker parameterization and config fallback."""
+
+    def test_tsla_source_label(self):
+        """TSLA client produces records with source='tsla'."""
+        config = _make_config()
+        cm = _make_connection_manager()
+        cm.get_rest_client.return_value.get_aggs.return_value = [_make_agg()]
+
+        client = PolygonEquityClient(config, cm, ticker="TSLA")
+        records = list(client.fetch_historical("2024-01-01", "2024-01-01"))
+
+        assert len(records) == 1
+        assert records[0]["source"] == "tsla"
+
+    def test_config_from_equities_section(self):
+        """When polygon.equities.<TICKER> exists, it is used over polygon.spy."""
+        config = _make_config(ticker="TSLA", use_equities=True)
+        cm = _make_connection_manager()
+
+        client = PolygonEquityClient(config, cm, ticker="TSLA")
+
+        assert client.ticker == "TSLA"
+        assert client.multiplier == 1
+        assert client.timespan == "second"
+
+    def test_fallback_to_spy_config(self):
+        """When equities section missing for ticker, falls back to polygon.spy."""
+        config = _make_config()  # No equities section
+        cm = _make_connection_manager()
+
+        client = PolygonEquityClient(config, cm, ticker="AAPL")
+
+        assert client.ticker == "AAPL"
+        assert client.multiplier == 1  # from polygon.spy fallback
+
+    def test_rate_limit_uses_ticker_name(self):
+        """Rate limit source key matches the lowercase ticker."""
+        config = _make_config()
+        cm = _make_connection_manager()
+        cm.get_rest_client.return_value.get_aggs.return_value = [_make_agg()]
+
+        client = PolygonEquityClient(config, cm, ticker="TSLA")
+        list(client.fetch_historical("2024-01-01", "2024-01-01"))
+
+        cm.acquire_rate_limit.assert_called_with(source="tsla")
+
+    def test_backward_compat_alias(self):
+        """PolygonSPYClient is an alias for PolygonEquityClient."""
+        assert PolygonSPYClient is PolygonEquityClient

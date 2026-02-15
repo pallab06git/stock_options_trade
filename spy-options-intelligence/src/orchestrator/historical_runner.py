@@ -4,7 +4,7 @@
 
 """Historical data ingestion runner.
 
-Orchestrates the end-to-end pipeline for fetching SPY historical data:
+Orchestrates the end-to-end pipeline for fetching equity historical data:
 Polygon REST API → Validator → Deduplicator → Parquet sink.
 Processes one date at a time with optional checkpoint/resume support.
 """
@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
 
-from src.data_sources.polygon_client import PolygonSPYClient
+from src.data_sources.polygon_client import PolygonEquityClient
 from src.processing.deduplicator import Deduplicator
 from src.processing.validator import RecordValidator
 from src.sinks.parquet_sink import ParquetSink
@@ -25,24 +25,26 @@ logger = get_logger()
 
 
 class HistoricalRunner:
-    """Orchestrate historical SPY data ingestion.
+    """Orchestrate historical equity data ingestion.
 
     Wires together the Polygon client, record validator, deduplicator,
     and Parquet sink into a batch pipeline. Processes one date at a time,
     with optional checkpoint/resume to skip already-completed dates.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], ticker: str = "SPY"):
         """
         Args:
             config: Full merged configuration dict.
+            ticker: Equity ticker symbol (e.g. "SPY", "TSLA").
         """
         self.config = config
+        self.ticker = ticker
 
         # Pipeline components
         self.connection_manager = ConnectionManager(config)
-        self.client = PolygonSPYClient(config, self.connection_manager)
-        self.validator = RecordValidator("spy")
+        self.client = PolygonEquityClient(config, self.connection_manager, ticker=self.ticker)
+        self.validator = RecordValidator.for_equity(self.ticker)
         self.deduplicator = Deduplicator(key_field="timestamp")
         self.sink = ParquetSink(config)
 
@@ -82,7 +84,7 @@ class HistoricalRunner:
             completed_dates = self._load_checkpoint(start_date, end_date)
             if completed_dates:
                 logger.info(
-                    f"Resuming: {len(completed_dates)} dates already completed, "
+                    f"Resuming {self.ticker}: {len(completed_dates)} dates already completed, "
                     f"skipping them"
                 )
 
@@ -101,7 +103,7 @@ class HistoricalRunner:
         }
 
         logger.info(
-            f"Historical run starting: {start_date} → {end_date} "
+            f"Historical run for {self.ticker}: {start_date} → {end_date} "
             f"({len(remaining_dates)} dates to process)"
         )
 
@@ -142,7 +144,7 @@ class HistoricalRunner:
             self.connection_manager.close()
 
         logger.info(
-            f"Historical run complete: {stats['dates_processed']} dates, "
+            f"Historical run for {self.ticker} complete: {stats['dates_processed']} dates, "
             f"{stats['total_written']}/{stats['total_fetched']} records written"
         )
         return stats
@@ -210,6 +212,8 @@ class HistoricalRunner:
     def _checkpoint_path(self, start_date: str, end_date: str) -> Path:
         """Return the checkpoint file path for a given date range.
 
+        Includes ticker to prevent collision between parallel runs.
+
         Args:
             start_date: Start date (YYYY-MM-DD).
             end_date: End date (YYYY-MM-DD).
@@ -217,7 +221,7 @@ class HistoricalRunner:
         Returns:
             Path to the checkpoint JSON file.
         """
-        return self._checkpoint_dir / f"checkpoint_{start_date}_{end_date}.json"
+        return self._checkpoint_dir / f"checkpoint_{self.ticker}_{start_date}_{end_date}.json"
 
     def _load_checkpoint(self, start_date: str, end_date: str) -> Set[str]:
         """Load completed dates from checkpoint file.

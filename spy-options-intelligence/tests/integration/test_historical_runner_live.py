@@ -79,7 +79,7 @@ class TestHistoricalRunnerLive:
         """After a successful run, checkpoint file should exist."""
         from pathlib import Path
         checkpoint_dir = Path(live_config["_checkpoint_dir"])
-        checkpoint_path = checkpoint_dir / f"checkpoint_{TEST_DATE}_{TEST_DATE}.json"
+        checkpoint_path = checkpoint_dir / f"checkpoint_SPY_{TEST_DATE}_{TEST_DATE}.json"
         assert checkpoint_path.exists(), f"Expected checkpoint at {checkpoint_path}"
 
         data = json.loads(checkpoint_path.read_text())

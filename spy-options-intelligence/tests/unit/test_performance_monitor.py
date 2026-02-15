@@ -825,3 +825,31 @@ class TestDumpWithStaleOps:
         data = json.loads(path.read_text())
 
         assert data["stale_operations"] == []
+
+
+# ---------------------------------------------------------------------------
+# Test: Session Label
+# ---------------------------------------------------------------------------
+
+class TestSessionLabel:
+    """Tests for session_label in metrics filenames and defaults."""
+
+    def test_default_session_label(self):
+        """Default session_label is 'default'."""
+        monitor = _make_monitor()
+        assert monitor.session_label == "default"
+
+    def test_custom_session_label(self):
+        """Custom session_label is stored."""
+        monitor = PerformanceMonitor(_make_config(), session_label="spy")
+        assert monitor.session_label == "spy"
+
+    @patch.object(PerformanceMonitor, "get_memory_usage_mb", return_value=100.0)
+    def test_metrics_filename_includes_session_label(self, mock_mem, tmp_path):
+        """Metrics dump filename includes session_label."""
+        monitor = PerformanceMonitor(_make_config(), session_label="tsla")
+        monitor._metrics_dir = tmp_path
+
+        path = monitor.dump_metrics()
+
+        assert "metrics_tsla_" in path.name

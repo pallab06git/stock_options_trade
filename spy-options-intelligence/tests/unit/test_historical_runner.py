@@ -22,8 +22,8 @@ _TS_DAY2_A = 1738022400000  # 2025-01-28 00:00:00 UTC
 _TS_DAY2_B = 1738022401000  # 2025-01-28 00:00:01 UTC
 
 
-def _make_record(timestamp=_TS_DAY1_A, close=450.0):
-    """Create a valid SPY aggregate record."""
+def _make_record(timestamp=_TS_DAY1_A, close=450.0, source="spy"):
+    """Create a valid equity aggregate record."""
     return {
         "timestamp": timestamp,
         "open": 449.50,
@@ -33,7 +33,7 @@ def _make_record(timestamp=_TS_DAY1_A, close=450.0):
         "volume": 1000,
         "vwap": 449.80,
         "transactions": 10,
-        "source": "spy",
+        "source": source,
     }
 
 
@@ -95,17 +95,17 @@ def _make_config(start_date=None, end_date=None, batch_size=10000,
     return cfg
 
 
-def _build_runner(config):
+def _build_runner(config, ticker="SPY"):
     """Instantiate HistoricalRunner with all components mocked."""
     with patch("src.orchestrator.historical_runner.ConnectionManager") as MockCM, \
-         patch("src.orchestrator.historical_runner.PolygonSPYClient") as MockClient, \
+         patch("src.orchestrator.historical_runner.PolygonEquityClient") as MockClient, \
          patch("src.orchestrator.historical_runner.RecordValidator") as MockValidator, \
          patch("src.orchestrator.historical_runner.Deduplicator") as MockDedup, \
          patch("src.orchestrator.historical_runner.ParquetSink") as MockSink:
 
         runner = __import__(
             "src.orchestrator.historical_runner", fromlist=["HistoricalRunner"]
-        ).HistoricalRunner(config)
+        ).HistoricalRunner(config, ticker=ticker)
 
     # Disable checkpoint writes by default (no filesystem in unit tests)
     runner._save_checkpoint = MagicMock()
@@ -589,11 +589,12 @@ class TestCheckpoint:
         config = _make_config(start_date="2025-01-27", end_date="2025-01-28")
 
         with patch("src.orchestrator.historical_runner.ConnectionManager"), \
-             patch("src.orchestrator.historical_runner.PolygonSPYClient"), \
-             patch("src.orchestrator.historical_runner.RecordValidator"), \
+             patch("src.orchestrator.historical_runner.PolygonEquityClient"), \
+             patch("src.orchestrator.historical_runner.RecordValidator") as MockVal, \
              patch("src.orchestrator.historical_runner.Deduplicator"), \
              patch("src.orchestrator.historical_runner.ParquetSink"):
 
+            MockVal.for_equity.return_value = MagicMock()
             runner = __import__(
                 "src.orchestrator.historical_runner", fromlist=["HistoricalRunner"]
             ).HistoricalRunner(config)
@@ -604,8 +605,8 @@ class TestCheckpoint:
         # Save a checkpoint using the real method
         runner._save_checkpoint("2025-01-27", "2025-01-27", "2025-01-28")
 
-        # Verify file exists and format
-        path = tmp_path / "checkpoint_2025-01-27_2025-01-28.json"
+        # Verify file exists and format — now includes ticker in filename
+        path = tmp_path / "checkpoint_SPY_2025-01-27_2025-01-28.json"
         assert path.exists()
 
         data = json.loads(path.read_text())
@@ -623,11 +624,12 @@ class TestCheckpoint:
         config = _make_config(start_date="2025-01-27", end_date="2025-01-28")
 
         with patch("src.orchestrator.historical_runner.ConnectionManager"), \
-             patch("src.orchestrator.historical_runner.PolygonSPYClient"), \
-             patch("src.orchestrator.historical_runner.RecordValidator"), \
+             patch("src.orchestrator.historical_runner.PolygonEquityClient"), \
+             patch("src.orchestrator.historical_runner.RecordValidator") as MockVal, \
              patch("src.orchestrator.historical_runner.Deduplicator"), \
              patch("src.orchestrator.historical_runner.ParquetSink"):
 
+            MockVal.for_equity.return_value = MagicMock()
             runner = __import__(
                 "src.orchestrator.historical_runner", fromlist=["HistoricalRunner"]
             ).HistoricalRunner(config)
@@ -641,3 +643,59 @@ class TestCheckpoint:
         runner._save_checkpoint("2025-01-27", "2025-01-27", "2025-01-28")
         loaded = runner._load_checkpoint("2025-01-27", "2025-01-28")
         assert loaded == {"2025-01-27"}
+
+
+# ---------------------------------------------------------------------------
+# Test: Ticker Parameterization
+# ---------------------------------------------------------------------------
+
+class TestTickerParam:
+    """Tests for multi-ticker support in HistoricalRunner."""
+
+    def test_runner_stores_ticker(self):
+        """Runner stores the ticker param."""
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-27")
+        runner = _build_runner(config, ticker="TSLA")
+        assert runner.ticker == "TSLA"
+
+    def test_default_ticker_is_spy(self):
+        """Default ticker is SPY when not provided."""
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-27")
+        runner = _build_runner(config)
+        assert runner.ticker == "SPY"
+
+    def test_checkpoint_includes_ticker(self, tmp_path):
+        """Checkpoint filename includes the ticker symbol."""
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-28")
+
+        with patch("src.orchestrator.historical_runner.ConnectionManager"), \
+             patch("src.orchestrator.historical_runner.PolygonEquityClient"), \
+             patch("src.orchestrator.historical_runner.RecordValidator") as MockVal, \
+             patch("src.orchestrator.historical_runner.Deduplicator"), \
+             patch("src.orchestrator.historical_runner.ParquetSink"):
+
+            MockVal.for_equity.return_value = MagicMock()
+            runner = __import__(
+                "src.orchestrator.historical_runner", fromlist=["HistoricalRunner"]
+            ).HistoricalRunner(config, ticker="TSLA")
+
+        runner._checkpoint_dir = tmp_path
+        runner._save_checkpoint("2025-01-27", "2025-01-27", "2025-01-28")
+
+        path = tmp_path / "checkpoint_TSLA_2025-01-27_2025-01-28.json"
+        assert path.exists()
+
+    def test_runner_with_tsla(self):
+        """TSLA runner processes data correctly."""
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-27")
+        runner = _build_runner(config, ticker="TSLA")
+
+        records = [_make_record(_TS_DAY1_A, source="tsla")]
+        runner.client.fetch_historical.return_value = iter(records)
+        runner.validator.validate_batch.return_value = (records, [])
+        runner.deduplicator.deduplicate_batch.return_value = records
+
+        stats = runner.run()
+
+        assert stats["total_fetched"] == 1
+        assert stats["total_written"] == 1

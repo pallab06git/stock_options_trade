@@ -518,3 +518,29 @@ class TestReadWriteErrorTracking:
 
         # Rate = 50%, threshold = 5% — alert should fire
         assert agg.should_alert() is True
+
+
+# ---------------------------------------------------------------------------
+# Test: Session Label
+# ---------------------------------------------------------------------------
+
+class TestSessionLabel:
+    """Tests for session_label in error summaries."""
+
+    def test_default_session_label(self):
+        """Default session_label is 'default'."""
+        agg = _make_aggregator()
+        assert agg.session_label == "default"
+
+    def test_custom_session_label(self):
+        """Custom session_label is stored."""
+        agg = ErrorAggregator(_make_config(), session_label="spy")
+        assert agg.session_label == "spy"
+
+    def test_error_summary_includes_session_label(self):
+        """Error summary includes session_label field."""
+        agg = ErrorAggregator(_make_config(), session_label="tsla")
+        agg.record_error("err", "test")
+
+        summary = agg.get_error_summary()
+        assert summary["session_label"] == "tsla"

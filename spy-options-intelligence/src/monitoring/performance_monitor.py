@@ -38,12 +38,15 @@ class PerformanceMonitor:
                 logger.warning(alert)
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], session_label: str = "default"):
         """
         Args:
             config: Full merged configuration dict.  Reads thresholds from
                     ``config["monitoring"]["performance"]``.
+            session_label: Label for this monitoring session (e.g. ticker name).
+                           Used in metrics dump filenames.
         """
+        self.session_label = session_label
         perf = config.get("monitoring", {}).get("performance", {})
 
         # Configurable thresholds
@@ -284,7 +287,7 @@ class PerformanceMonitor:
         self._metrics_dir.mkdir(parents=True, exist_ok=True)
 
         now = datetime.utcnow()
-        filename = f"metrics_{now.strftime('%Y-%m-%d_%H%M%S')}.json"
+        filename = f"metrics_{self.session_label}_{now.strftime('%Y-%m-%d_%H%M%S')}.json"
         path = self._metrics_dir / filename
 
         # Detect any stale in-flight operations

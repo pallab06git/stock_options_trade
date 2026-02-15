@@ -13,6 +13,18 @@ polygon:
       options: 1   # 1 req/min for options discovery
       news: 1      # 1 req/min for news polling
 
+  # Per-ticker equity configuration (new — preferred)
+  equities:
+    SPY:
+      multiplier: 1
+      timespan: "minute"          # "minute" for free tier, "second" with paid plan
+      limit_per_request: 50000
+    # TSLA:
+    #   multiplier: 1
+    #   timespan: "minute"
+    #   limit_per_request: 50000
+
+  # DEPRECATED — kept for backward compatibility. Use polygon.equities.<TICKER> instead.
   spy:
     ticker: "SPY"
     multiplier: 1

@@ -2,11 +2,11 @@
 # This source code is proprietary and confidential.
 # Unauthorized copying, modification, or commercial use is strictly prohibited.
 
-"""Polygon.io SPY client for historical per-second aggregate data.
+"""Polygon.io equity client for historical per-second aggregate data.
 
-Fetches SPY per-second bars via the Polygon REST API using the official
-polygon-api-client SDK. Implements the BaseSource interface for historical
-mode. Streaming (WebSocket) is deferred to Step 10.
+Fetches equity (SPY, TSLA, etc.) per-second bars via the Polygon REST API
+using the official polygon-api-client SDK. Implements the BaseSource interface
+for historical mode. Streaming (WebSocket) is deferred to Step 10.
 """
 
 from datetime import datetime, timedelta
@@ -19,45 +19,58 @@ from src.utils.retry_handler import RetryableError, with_retry
 
 logger = get_logger()
 
-# Required fields for a valid SPY aggregate record
+# Required fields for a valid equity aggregate record
 _REQUIRED_FIELDS = {"timestamp", "open", "high", "low", "close"}
 
 # Price fields that must be positive
 _PRICE_FIELDS = ("open", "high", "low", "close")
 
 
-class PolygonSPYClient(BaseSource):
+class PolygonEquityClient(BaseSource):
     """
-    Fetch SPY per-second aggregate bars from Polygon.io REST API.
+    Fetch equity per-second aggregate bars from Polygon.io REST API.
 
     Uses ConnectionManager for shared RESTClient and rate limiting.
     Generator-based processing for memory efficiency.
     """
 
-    def __init__(self, config: Dict[str, Any], connection_manager: ConnectionManager):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        connection_manager: ConnectionManager,
+        ticker: str = "SPY",
+    ):
         """
         Args:
-            config: Full merged config dict (needs polygon.spy section).
+            config: Full merged config dict.
             connection_manager: Shared ConnectionManager for REST client and rate limiting.
+            ticker: Equity ticker symbol (e.g. "SPY", "TSLA").
         """
         super().__init__(config)
         self.connection_manager = connection_manager
+        self.ticker = ticker
 
-        spy_config = config.get("polygon", {}).get("spy", {})
-        self.ticker = spy_config.get("ticker", "SPY")
-        self.multiplier = spy_config.get("multiplier", 1)
-        self.timespan = spy_config.get("timespan", "second")
-        self.limit_per_request = spy_config.get("limit_per_request", 50000)
+        # Try new equities config first, fall back to legacy polygon.spy
+        equities_config = config.get("polygon", {}).get("equities", {}).get(ticker, {})
+        if equities_config:
+            self.multiplier = equities_config.get("multiplier", 1)
+            self.timespan = equities_config.get("timespan", "second")
+            self.limit_per_request = equities_config.get("limit_per_request", 50000)
+        else:
+            spy_config = config.get("polygon", {}).get("spy", {})
+            self.multiplier = spy_config.get("multiplier", 1)
+            self.timespan = spy_config.get("timespan", "second")
+            self.limit_per_request = spy_config.get("limit_per_request", 50000)
 
     def connect(self) -> None:
         """Verify REST client is available and set mode to HISTORICAL."""
         self.connection_manager.get_rest_client()
         self.mode = ExecutionMode.HISTORICAL
-        logger.info(f"PolygonSPYClient connected (ticker={self.ticker}, mode=historical)")
+        logger.info(f"PolygonEquityClient connected (ticker={self.ticker}, mode=historical)")
 
     def disconnect(self) -> None:
         """No-op — ConnectionManager owns the REST client lifecycle."""
-        logger.debug("PolygonSPYClient disconnect (no-op, ConnectionManager owns client)")
+        logger.debug(f"PolygonEquityClient disconnect for {self.ticker} (no-op)")
 
     def fetch_historical(
         self,
@@ -66,7 +79,7 @@ class PolygonSPYClient(BaseSource):
         **kwargs,
     ) -> Generator[Dict[str, Any], None, None]:
         """
-        Fetch SPY per-second aggregates for a date range.
+        Fetch equity per-second aggregates for a date range.
 
         Iterates date-by-date, yielding individual records as dicts.
         On error for a single date, logs and skips to the next date.
@@ -76,7 +89,7 @@ class PolygonSPYClient(BaseSource):
             end_date: End date (YYYY-MM-DD).
 
         Yields:
-            Standardized SPY aggregate records.
+            Standardized equity aggregate records.
         """
         current = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
@@ -87,18 +100,20 @@ class PolygonSPYClient(BaseSource):
                 records = self._fetch_single_date(date_str)
                 count = len(records)
                 if count > 0:
-                    logger.info(f"Fetched {count} SPY bars for {date_str}")
+                    logger.info(f"Fetched {count} {self.ticker} bars for {date_str}")
                 else:
-                    logger.debug(f"No SPY data for {date_str}")
+                    logger.debug(f"No {self.ticker} data for {date_str}")
                 for record in records:
                     yield record
             except Exception as e:
-                logger.error(f"Failed to fetch SPY data for {date_str}: {e}. Skipping date.")
+                logger.error(
+                    f"Failed to fetch {self.ticker} data for {date_str}: {e}. Skipping date."
+                )
             current += timedelta(days=1)
 
     def _fetch_single_date(self, date: str) -> List[Dict[str, Any]]:
         """
-        Fetch all SPY aggregates for a single date.
+        Fetch all equity aggregates for a single date.
 
         Acquires rate limit before making the API call. Retries on
         server errors via the with_retry decorator.
@@ -109,7 +124,7 @@ class PolygonSPYClient(BaseSource):
         Returns:
             List of standardized aggregate records.
         """
-        self.connection_manager.acquire_rate_limit(source="spy")
+        self.connection_manager.acquire_rate_limit(source=self.ticker.lower())
 
         @with_retry(source="polygon", config=self.config)
         def _api_call():
@@ -153,12 +168,12 @@ class PolygonSPYClient(BaseSource):
             "volume": getattr(agg, "volume", None),
             "vwap": getattr(agg, "vwap", None),
             "transactions": getattr(agg, "transactions", None),
-            "source": "spy",
+            "source": self.ticker.lower(),
         }
 
     def validate_record(self, record: Dict[str, Any]) -> bool:
         """
-        Validate a SPY aggregate record.
+        Validate an equity aggregate record.
 
         Checks that all required fields are present, timestamp is positive,
         and OHLC prices are positive.
@@ -188,3 +203,7 @@ class PolygonSPYClient(BaseSource):
     def stream_realtime(self, **kwargs) -> Generator[Dict[str, Any], None, None]:
         """Not implemented in Step 4. Streaming is Step 10."""
         raise NotImplementedError("Streaming implemented in Step 10")
+
+
+# Backward-compatible alias
+PolygonSPYClient = PolygonEquityClient

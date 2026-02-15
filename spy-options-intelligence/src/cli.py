@@ -6,10 +6,17 @@
 
 Usage:
     python -m src.cli backfill --start-date 2025-01-27 --end-date 2025-01-28
-    python -m src.cli backfill --resume
-    python -m src.cli backfill --help
+    python -m src.cli backfill --ticker TSLA --start-date 2025-01-27
+    python -m src.cli backfill-all --start-date 2025-01-27 --end-date 2025-01-27
+    python -m src.cli workers list
+    python -m src.cli workers stop --ticker SPY
+    python -m src.cli workers stop --all
+    python -m src.cli health
+    python -m src.cli health --ticker SPY
+    python -m src.cli health --json
 """
 
+import json as json_mod
 import sys
 
 import click
@@ -31,6 +38,11 @@ def cli():
     help="Path to config directory containing YAML files.",
 )
 @click.option(
+    "--ticker",
+    default="SPY",
+    help="Equity ticker symbol (e.g. SPY, TSLA).",
+)
+@click.option(
     "--start-date",
     default=None,
     help="Override start date (YYYY-MM-DD).",
@@ -45,8 +57,14 @@ def cli():
     default=False,
     help="Resume from last checkpoint, skipping completed dates.",
 )
-def backfill(config_dir, start_date, end_date, resume):
-    """Run historical SPY data backfill."""
+@click.option(
+    "--rate-limit",
+    default=None,
+    type=float,
+    help="Override total_requests_per_minute rate limit.",
+)
+def backfill(config_dir, ticker, start_date, end_date, resume, rate_limit):
+    """Run historical equity data backfill."""
     try:
         # Load configuration
         loader = ConfigLoader(config_dir=config_dir)
@@ -62,6 +80,12 @@ def backfill(config_dir, start_date, end_date, resume):
                 "end_date"
             ] = end_date
 
+        # Override rate limit if provided
+        if rate_limit is not None:
+            config.setdefault("polygon", {}).setdefault("rate_limiting", {})[
+                "total_requests_per_minute"
+            ] = rate_limit
+
         # Setup logging
         setup_logger(config)
         logger = get_logger()
@@ -69,11 +93,11 @@ def backfill(config_dir, start_date, end_date, resume):
         # Run pipeline
         from src.orchestrator.historical_runner import HistoricalRunner
 
-        runner = HistoricalRunner(config)
+        runner = HistoricalRunner(config, ticker=ticker)
         stats = runner.run(resume=resume)
 
         # Print summary
-        click.echo("\n--- Backfill Summary ---")
+        click.echo(f"\n--- Backfill Summary ({ticker}) ---")
         click.echo(f"Date range:      {stats['start_date']} → {stats['end_date']}")
         click.echo(f"Dates processed: {stats['dates_processed']}")
         click.echo(f"Dates skipped:   {stats['dates_skipped']}")
@@ -82,6 +106,155 @@ def backfill(config_dir, start_date, end_date, resume):
         click.echo(f"Invalid:         {stats['total_invalid']}")
         click.echo(f"Duplicates:      {stats['total_duplicates']}")
 
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("backfill-all")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--start-date",
+    required=True,
+    help="Start date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    required=True,
+    help="End date (YYYY-MM-DD).",
+)
+@click.option(
+    "--resume/--no-resume",
+    default=False,
+    help="Resume from last checkpoint for each ticker.",
+)
+def backfill_all(config_dir, start_date, end_date, resume):
+    """Run parallel backfill for all configured tickers."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.orchestrator.parallel_runner import ParallelRunner
+
+        runner = ParallelRunner(config)
+        click.echo(
+            f"Starting parallel backfill for {runner.tickers} "
+            f"({start_date} → {end_date})"
+        )
+        results = runner.run(
+            start_date=start_date,
+            end_date=end_date,
+            resume=resume,
+            config_dir=config_dir,
+        )
+
+        click.echo("\n--- Parallel Backfill Results ---")
+        for ticker, result in results.items():
+            status = "OK" if result["exit_code"] == 0 else f"FAILED ({result['exit_code']})"
+            click.echo(f"  {ticker}: {status}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Workers subgroup
+# ---------------------------------------------------------------------------
+
+@cli.group()
+def workers():
+    """Manage worker processes."""
+    pass
+
+
+@workers.command("list")
+def workers_list():
+    """Show all workers with PID, ticker, and status."""
+    try:
+        from src.orchestrator.process_manager import ProcessManager
+
+        manager = ProcessManager({})
+        worker_list = manager.list_workers()
+
+        if not worker_list:
+            click.echo("No workers registered.")
+            return
+
+        click.echo(f"{'Ticker':<8} {'PID':<8} {'Status':<12} {'Alive':<6} {'Started'}")
+        click.echo("-" * 60)
+        for w in worker_list:
+            alive = "yes" if w["alive"] else "no"
+            click.echo(
+                f"{w['ticker']:<8} {w['pid']:<8} {w['status']:<12} "
+                f"{alive:<6} {w['started_at']}"
+            )
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@workers.command("stop")
+@click.option("--ticker", default=None, help="Stop a specific worker by ticker.")
+@click.option("--all", "stop_all", is_flag=True, help="Stop all workers.")
+def workers_stop(ticker, stop_all):
+    """Stop one or all workers."""
+    try:
+        from src.orchestrator.process_manager import ProcessManager
+
+        manager = ProcessManager({})
+
+        if stop_all:
+            results = manager.stop_all()
+            for t, success in results.items():
+                status = "stopped" if success else "failed/not running"
+                click.echo(f"  {t}: {status}")
+        elif ticker:
+            success = manager.stop_worker(ticker)
+            if success:
+                click.echo(f"Stopped worker {ticker}")
+            else:
+                click.echo(f"Could not stop worker {ticker} (not found or not running)")
+        else:
+            click.echo("Specify --ticker <TICKER> or --all", err=True)
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Health command
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--ticker", default=None, help="Show detailed metrics for one session.")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON for scripting.")
+def health(ticker, as_json):
+    """Show health status and metrics for all sessions."""
+    try:
+        from src.monitoring.health_dashboard import HealthDashboard
+
+        dashboard = HealthDashboard()
+
+        if ticker:
+            detail = dashboard.get_session_detail(ticker)
+            if detail:
+                click.echo(json_mod.dumps(detail, indent=2))
+            else:
+                click.echo(f"No metrics found for {ticker}")
+        elif as_json:
+            summary = dashboard.get_health_summary()
+            click.echo(json_mod.dumps(summary, indent=2))
+        else:
+            summary = dashboard.get_health_summary()
+            click.echo(dashboard.format_table(summary))
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

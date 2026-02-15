@@ -29,6 +29,10 @@ logging:
   execution_log_path: "data/logs/execution"
   error_log_path: "data/logs/errors"
 
+orchestrator:
+  tickers: ["SPY"]
+  max_workers: 1
+
 historical:
   backfill:
     trading_days: 30

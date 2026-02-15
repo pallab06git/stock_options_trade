@@ -33,12 +33,14 @@ class ErrorAggregator:
             logger.warning("Error rate threshold exceeded!")
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], session_label: str = "default"):
         """
         Args:
             config: Full merged configuration dict.  Reads thresholds from
                     ``config["monitoring"]["performance"]``.
+            session_label: Label for this monitoring session (e.g. ticker name).
         """
+        self.session_label = session_label
         perf = config.get("monitoring", {}).get("performance", {})
 
         # Configurable thresholds
@@ -135,6 +137,7 @@ class ErrorAggregator:
             ``total_successes``, and ``current_rate_percent``.
         """
         return {
+            "session_label": self.session_label,
             "error_counts": dict(self._error_counts),
             "total_errors": self.total_errors,
             "total_successes": self.total_successes,

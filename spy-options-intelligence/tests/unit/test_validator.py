@@ -144,3 +144,52 @@ class TestUnknownSource:
     def test_unknown_source_raises(self):
         with pytest.raises(ValueError, match="Unknown source"):
             RecordValidator("crypto")
+
+
+# ---------------------------------------------------------------------------
+# Tests: Equity Schema & for_equity Factory
+# ---------------------------------------------------------------------------
+
+
+class TestEquitySchema:
+    """Tests for the generic equity schema and for_equity factory."""
+
+    def test_equity_schema_accepts_spy_source(self):
+        """Equity schema accepts records with source='spy'."""
+        v = RecordValidator("equity")
+        assert v.validate(_spy_record(source="spy")) is True
+
+    def test_equity_schema_accepts_tsla_source(self):
+        """Equity schema accepts records with source='tsla'."""
+        v = RecordValidator("equity")
+        record = _spy_record(source="tsla")
+        assert v.validate(record) is True
+
+    def test_equity_schema_accepts_any_source(self):
+        """Equity schema does not enforce a specific source label."""
+        v = RecordValidator("equity")
+        record = _spy_record(source="aapl")
+        assert v.validate(record) is True
+
+    def test_equity_schema_still_validates_fields(self):
+        """Equity schema still rejects records with invalid fields."""
+        v = RecordValidator("equity")
+        assert v.validate(_spy_record(open=-1.0)) is False
+        assert v.validate(_spy_record(timestamp=0)) is False
+
+    def test_for_equity_factory(self):
+        """for_equity() returns a validator with equity schema and ticker context."""
+        v = RecordValidator.for_equity("TSLA")
+        assert v.source == "equity"
+        assert v._ticker == "TSLA"
+        assert v.validate(_spy_record(source="tsla")) is True
+
+    def test_for_equity_spy(self):
+        """for_equity('SPY') also accepts spy-sourced records."""
+        v = RecordValidator.for_equity("SPY")
+        assert v.validate(_spy_record(source="spy")) is True
+
+    def test_spy_validator_still_rejects_wrong_source(self):
+        """Legacy RecordValidator('spy') still rejects non-spy sources."""
+        v = RecordValidator("spy")
+        assert v.validate(_spy_record(source="tsla")) is False
