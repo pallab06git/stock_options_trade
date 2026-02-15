@@ -8,6 +8,7 @@ Usage:
     python -m src.cli backfill --start-date 2025-01-27 --end-date 2025-01-28
     python -m src.cli backfill --ticker TSLA --start-date 2025-01-27
     python -m src.cli backfill-all --start-date 2025-01-27 --end-date 2025-01-27
+    python -m src.cli discover --date 2026-02-09
     python -m src.cli workers list
     python -m src.cli workers stop --ticker SPY
     python -m src.cli workers stop --all
@@ -199,6 +200,64 @@ def backfill_all(config_dir, start_date, end_date, resume):
         for ticker, result in results.items():
             status = "OK" if result["exit_code"] == 0 else f"FAILED ({result['exit_code']})"
             click.echo(f"  {ticker}: {status}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Options discovery command
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--date",
+    required=True,
+    help="Trading date for contract discovery (YYYY-MM-DD).",
+)
+def discover(config_dir, date):
+    """Discover options contracts within strike range of opening price."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.data_sources.polygon_options_client import PolygonOptionsClient
+        from src.utils.connection_manager import ConnectionManager
+
+        cm = ConnectionManager(config)
+        client = PolygonOptionsClient(config, cm)
+
+        # Fetch opening price
+        opening_price = client.fetch_opening_price(date)
+        click.echo(f"Opening price for {client.underlying_ticker} on {date}: {opening_price}")
+
+        # Discover contracts
+        contracts = client.discover_contracts(date, opening_price)
+
+        if not contracts:
+            click.echo("No contracts found in strike range.")
+            return
+
+        # Save to disk
+        path = client.save_contracts(contracts, date)
+
+        # Print summary
+        click.echo(f"\n--- Options Discovery Summary ---")
+        click.echo(f"Date:            {date}")
+        click.echo(f"Opening price:   {opening_price}")
+        lower = round(opening_price * (1 - client.strike_range_pct), 2)
+        upper = round(opening_price * (1 + client.strike_range_pct), 2)
+        click.echo(f"Strike range:    [{lower}, {upper}]")
+        click.echo(f"Contracts found: {len(contracts)}")
+        click.echo(f"Saved to:        {path}")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)

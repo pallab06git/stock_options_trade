@@ -94,10 +94,14 @@
 - [x] Unit tests: 2 connection_manager + 4 polygon_client + 10 streaming_runner = 16 new
 - [x] Integration tests: 4 streaming flow tests (pipeline, heartbeat, stats, market close)
 
-## Step 12: Options Discovery (Week 4)
-- [ ] fetch_spy_opening_price()
-- [ ] discover_options_contracts() (±1% strikes)
-- [ ] Save to data/raw/options/contracts/
+## Step 12: Options Discovery ✅
+- [x] Implement src/data_sources/polygon_options_client.py (PolygonOptionsClient)
+- [x] fetch_opening_price() — get_daily_open_close() with rate limiting and retry
+- [x] discover_contracts() — list_options_contracts() with ±1% strike range, expiration lookahead
+- [x] save_contracts() / load_contracts() — JSON persistence in data/raw/options/contracts/
+- [x] _transform_contract() — standardized field mapping
+- [x] CLI discover command (--date, --config-dir)
+- [x] Unit tests (14 tests)
 
 ## Step 13: Options Streaming (Week 5)
 - [ ] stream_options_realtime()
@@ -161,4 +165,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 340 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
+**Total tests: 354 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
