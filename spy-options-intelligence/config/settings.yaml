@@ -41,6 +41,29 @@ historical:
     # start_date: "2025-01-01"
     # end_date: "2025-01-31"
 
+consolidation:
+  risk_free_rate: 0.045
+  dividend_yield: 0.015
+  indicators:
+    rsi:
+      period: 14
+    macd:
+      fast: 12
+      slow: 26
+      signal: 9
+    bollinger:
+      period: 20
+      std_dev: 2.0
+  momentum:
+    windows: [5, 30, 60]
+  greeks:
+    min_time_to_expiry_days: 0.01
+    min_iv: 0.01
+    max_iv: 5.0
+    fallback_iv: 0.20
+  news:
+    max_lookback_hours: 24
+
 signal_validation:
   prediction_window_minutes: 120
   padding_strategy: "last_price"

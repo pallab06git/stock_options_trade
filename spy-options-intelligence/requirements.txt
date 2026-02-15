@@ -51,6 +51,11 @@ mypy>=1.3.0
 ipython>=8.14.0
 jupyter>=1.0.0
 
+# Feature Engineering
+py_vollib>=1.0.3               # Black-Scholes Greeks and implied volatility
+ta>=0.11.0                     # Technical indicators (RSI, MACD, Bollinger)
+scipy>=1.11.0                  # Numerical methods (required by py_vollib)
+
 # Utilities
 python-dateutil>=2.8.2
 pytz>=2023.3

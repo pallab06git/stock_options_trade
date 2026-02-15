@@ -133,14 +133,18 @@
 - [x] Unit tests: 18 news client + 1 historical DI + 1 streaming DI = 20 new
 - [x] Integration tests: 11 live Polygon tests (connection, schema, validator, dedup, full pipeline)
 
-## Step 16: Data Consolidation (Week 6)
-- [ ] Implement src/processing/consolidator.py
-- [ ] Time alignment (SPY + Options + VIX + News)
-- [ ] Compute Greeks (py_vollib)
-- [ ] Compute momentum arrays
-- [ ] Compute technical indicators (pandas-ta)
-- [ ] On-demand execution
-- [ ] Integration test (1 day consolidated)
+## Step 16: Data Consolidation ✅
+- [x] Install dependencies (py_vollib, ta, scipy)
+- [x] Add consolidation config to settings.yaml
+- [x] Implement src/processing/consolidator.py (full consolidation engine)
+- [x] Time alignment (SPY + VIX via merge_asof forward-fill)
+- [x] Compute Greeks (py_vollib Black-Scholes: delta, gamma, theta, vega, rho, IV)
+- [x] Compute momentum (price_change + ROC for windows [5, 30, 60])
+- [x] Compute technical indicators (ta library: RSI, MACD, Bollinger Bands)
+- [x] Attach news sentiment (merge_asof with lookback tolerance)
+- [x] CLI consolidate command (--date, --config-dir)
+- [x] Unit tests (21 tests)
+- [x] Integration test (1 full pipeline test — all 4 sources)
 
 ## Step 17: Schema Drift Detection (Week 6)
 - [ ] Implement src/monitoring/schema_monitor.py
@@ -179,4 +183,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 415 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
+**Total tests: 437 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**

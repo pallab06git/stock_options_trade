@@ -435,6 +435,46 @@ def stream_news(config_dir):
         sys.exit(1)
 
 
+@cli.command()
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--date",
+    required=True,
+    help="Trading date to consolidate (YYYY-MM-DD).",
+)
+def consolidate(config_dir, date):
+    """Consolidate SPY, VIX, options, and news data for a trading day."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.processing.consolidator import Consolidator
+
+        consolidator = Consolidator(config)
+        stats = consolidator.consolidate(date)
+
+        click.echo(f"\n--- Consolidation Summary ---")
+        click.echo(f"Date:               {stats.get('date')}")
+        click.echo(f"Status:             {stats.get('status')}")
+        if stats.get("status") == "success":
+            click.echo(f"Total rows:         {stats.get('total_rows')}")
+            click.echo(f"Options contracts:  {stats.get('options_contracts_processed')}")
+            click.echo(f"VIX available:      {stats.get('vix_available')}")
+            click.echo(f"News available:     {stats.get('news_available')}")
+        else:
+            click.echo(f"Reason:             {stats.get('reason', 'unknown')}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 @cli.command("backfill-all")
 @click.option(
     "--config-dir",
