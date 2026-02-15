@@ -154,15 +154,22 @@
 - [x] Unit tests: 39 consolidator + 20 training_data_prep = 59 tests
 - [x] Integration test (1 full pipeline — flat schema, no list columns, no target in consolidator)
 
-## Step 17: Schema Drift Detection (Week 6)
-- [ ] Implement src/monitoring/schema_monitor.py
-- [ ] Daily alerts
-- [ ] Continue processing despite drift
+## Step 17: Schema Drift Detection ✅
+- [x] Implement src/monitoring/schema_monitor.py (SchemaMonitor class)
+- [x] Schema extraction via pyarrow.parquet.read_schema() (metadata-only, no data loading)
+- [x] Baseline persistence (JSON in data/logs/schema/)
+- [x] Drift detection: new columns, missing columns, type changes
+- [x] Configurable alert toggles (alert_on_new_columns, alert_on_missing_columns, alert_on_type_changes)
+- [x] Auto-update baseline option (auto_update_baseline)
+- [x] Drift event logging (data/logs/schema/drift/)
+- [x] Config: monitoring.schema section in settings.yaml
+- [x] CLI: schema-check command (--source, --date)
+- [x] CLI: schema-baseline command (--source, --date)
+- [x] Export SchemaMonitor from src/monitoring/__init__.py
+- [x] Unit tests (20 tests — init, capture, diff, alerts, check_drift, save/load, log, auto-update)
 
-## Step 18: Late Data Handler (Week 6)
-- [ ] Implement src/processing/late_data_handler.py
-- [ ] Configurable rejection window
-- [ ] Quarantine late data
+## Step 18: Late Data Handler — DEFERRED to Phase 2
+- [ ] Deferred: will use Kafka + Spark watermarking in Phase 2
 
 ## Step 19: Feed Simulator (Week 7)
 - [ ] Implement src/orchestrator/simulator.py
@@ -191,4 +198,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 475 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
+**Total tests: 495 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**

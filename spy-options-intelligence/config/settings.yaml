@@ -12,6 +12,12 @@ streaming:
     alert_threshold_seconds: 900      # 15 minutes
 
 monitoring:
+  schema:
+    alert_on_new_columns: true
+    alert_on_missing_columns: true
+    alert_on_type_changes: true
+    auto_update_baseline: false
+
   performance:
     commit_latency_seconds: 300           # Alert if batch write exceeds 5 min
     throughput_min_records_per_sec: 100    # Alert if throughput drops below

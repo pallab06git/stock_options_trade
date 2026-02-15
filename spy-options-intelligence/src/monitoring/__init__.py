@@ -5,5 +5,6 @@
 from src.monitoring.error_aggregator import ErrorAggregator
 from src.monitoring.heartbeat_monitor import HeartbeatMonitor
 from src.monitoring.performance_monitor import PerformanceMonitor
+from src.monitoring.schema_monitor import SchemaMonitor
 
-__all__ = ["ErrorAggregator", "HeartbeatMonitor", "PerformanceMonitor"]
+__all__ = ["ErrorAggregator", "HeartbeatMonitor", "PerformanceMonitor", "SchemaMonitor"]

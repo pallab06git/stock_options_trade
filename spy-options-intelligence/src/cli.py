@@ -21,6 +21,7 @@ Usage:
 
 import json as json_mod
 import sys
+from pathlib import Path
 
 import click
 
@@ -526,6 +527,110 @@ def prepare_training(config_dir, start_date, end_date):
         click.echo(f"Unique options:     {stats['unique_options']}")
         click.echo(f"Prediction window:  {stats['prediction_window_minutes']} min")
         click.echo(f"Min coverage:       {stats['min_target_coverage_pct']}%")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Schema drift commands
+# ---------------------------------------------------------------------------
+
+@cli.command("schema-check")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--source",
+    required=True,
+    help="Data source name (spy, vix, options, news, consolidated).",
+)
+@click.option(
+    "--date",
+    required=True,
+    help="Date of the Parquet file to check (YYYY-MM-DD).",
+)
+def schema_check(config_dir, source, date):
+    """Check for schema drift against stored baseline."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.monitoring.schema_monitor import SchemaMonitor
+
+        # Resolve Parquet path
+        if source == "consolidated":
+            parquet_path = f"data/processed/consolidated/{date}.parquet"
+        else:
+            parquet_path = f"data/raw/{source}/{date}.parquet"
+
+        if not Path(parquet_path).exists():
+            click.echo(f"File not found: {parquet_path}", err=True)
+            sys.exit(1)
+
+        monitor = SchemaMonitor(config)
+        alerts = monitor.check_drift(source, parquet_path)
+
+        if alerts:
+            click.echo(f"Schema drift detected for '{source}' on {date}:")
+            for alert in alerts:
+                click.echo(f"  {alert}")
+        else:
+            click.echo(f"No schema drift detected for '{source}' on {date}.")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("schema-baseline")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--source",
+    required=True,
+    help="Data source name (spy, vix, options, news, consolidated).",
+)
+@click.option(
+    "--date",
+    required=True,
+    help="Date of the Parquet file to use as baseline (YYYY-MM-DD).",
+)
+def schema_baseline(config_dir, source, date):
+    """Capture or recapture a schema baseline from a Parquet file."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.monitoring.schema_monitor import SchemaMonitor
+
+        # Resolve Parquet path
+        if source == "consolidated":
+            parquet_path = f"data/processed/consolidated/{date}.parquet"
+        else:
+            parquet_path = f"data/raw/{source}/{date}.parquet"
+
+        if not Path(parquet_path).exists():
+            click.echo(f"File not found: {parquet_path}", err=True)
+            sys.exit(1)
+
+        monitor = SchemaMonitor(config)
+        baseline = monitor.capture_baseline(source, parquet_path)
+        path = monitor.save_baseline(source, baseline)
+
+        click.echo(f"Baseline captured for '{source}' from {date}:")
+        click.echo(f"  Columns: {baseline['column_count']}")
+        click.echo(f"  Saved to: {path}")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
