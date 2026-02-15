@@ -4,7 +4,7 @@
 
 """Market hours and trading calendar utilities."""
 
-from datetime import datetime, time, date
+from datetime import datetime, time, date, timedelta
 from typing import Optional, List
 import pytz
 import requests

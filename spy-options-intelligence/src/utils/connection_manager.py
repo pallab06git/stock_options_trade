@@ -14,6 +14,8 @@ import time
 from typing import Optional
 
 from polygon import RESTClient
+from polygon import WebSocketClient
+from polygon.websocket.models import Feed, Market
 
 from src.utils.logger import get_logger
 
@@ -119,6 +121,7 @@ class ConnectionManager:
                 - polygon.api_key: Polygon API key
                 - polygon.rate_limiting.total_requests_per_minute: rate limit budget
         """
+        self._config = config
         polygon_config = config.get("polygon", {})
         self._api_key = polygon_config.get("api_key", "")
 
@@ -156,6 +159,30 @@ class ConnectionManager:
                     self._rest_client = RESTClient(api_key=self._api_key)
                     logger.info("Polygon RESTClient initialized")
         return self._rest_client
+
+    def get_ws_client(self, market: Market = Market.Stocks) -> WebSocketClient:
+        """
+        Create a new Polygon WebSocketClient instance.
+
+        Unlike get_rest_client() (singleton), each call returns a new
+        WebSocketClient since WebSocket connections are stateful.
+
+        Args:
+            market: Polygon market to subscribe to.
+
+        Returns:
+            New polygon.WebSocketClient instance.
+        """
+        feed_str = self._config.get("polygon", {}).get("feed", "delayed")
+        feed = Feed.RealTime if feed_str == "realtime" else Feed.Delayed
+
+        client = WebSocketClient(
+            api_key=self._api_key,
+            feed=feed,
+            market=market,
+        )
+        logger.info(f"WebSocketClient created (feed={feed_str}, market={market.value})")
+        return client
 
     def acquire_rate_limit(self, source: str = None) -> bool:
         """

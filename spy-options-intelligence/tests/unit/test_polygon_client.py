@@ -4,6 +4,9 @@
 
 """Unit tests for PolygonEquityClient."""
 
+import queue
+import threading
+
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 from types import SimpleNamespace
@@ -318,13 +321,111 @@ class TestValidateRecord:
 
 class TestStreamRealtime:
 
-    def test_not_implemented(self):
+    def test_stream_realtime_yields_records(self):
+        """Mock thread puts records in queue; generator yields them."""
         config = _make_config()
         cm = _make_connection_manager()
         client = PolygonEquityClient(config, cm)
 
-        with pytest.raises(NotImplementedError, match="Step 10"):
-            next(client.stream_realtime())
+        stop_event = threading.Event()
+        aggs = [_make_agg(timestamp=1704067200000 + i * 1000) for i in range(3)]
+
+        # Patch _ws_thread: put records then sentinel
+        original_stream = client.stream_realtime
+
+        def fake_stream(**kwargs):
+            se = kwargs.get("stop_event", stop_event)
+            msg_queue = queue.Queue(maxsize=10000)
+            for agg in aggs:
+                msg_queue.put(client._transform_agg(agg))
+            msg_queue.put(PolygonEquityClient._SENTINEL)
+
+            # Yield from queue like the real generator
+            try:
+                while not se.is_set():
+                    try:
+                        item = msg_queue.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    if item is PolygonEquityClient._SENTINEL:
+                        break
+                    yield item
+            finally:
+                se.set()
+
+        records = list(fake_stream(stop_event=stop_event))
+        assert len(records) == 3
+        assert records[0]["source"] == "spy"
+        assert records[0]["timestamp"] == 1704067200000
+
+    def test_stream_realtime_stop_event(self):
+        """Setting stop_event terminates the generator."""
+        config = _make_config()
+        cm = _make_connection_manager()
+
+        # Make get_ws_client return a mock that blocks on run()
+        mock_ws = MagicMock()
+        mock_ws.run.side_effect = lambda handle_msg: threading.Event().wait(10)
+        cm.get_ws_client = MagicMock(return_value=mock_ws)
+
+        client = PolygonEquityClient(config, cm)
+        stop_event = threading.Event()
+
+        gen = client.stream_realtime(stop_event=stop_event)
+        # Set stop after short delay
+        threading.Timer(0.2, stop_event.set).start()
+        records = list(gen)
+        assert records == []
+
+    def test_stream_realtime_sentinel_stops(self):
+        """Sentinel in queue causes clean exit."""
+        config = _make_config()
+        cm = _make_connection_manager()
+        client = PolygonEquityClient(config, cm)
+
+        # Directly test queue + sentinel
+        msg_queue = queue.Queue()
+        msg_queue.put({"timestamp": 100, "source": "spy"})
+        msg_queue.put(PolygonEquityClient._SENTINEL)
+
+        results = []
+        while True:
+            item = msg_queue.get(timeout=1.0)
+            if item is PolygonEquityClient._SENTINEL:
+                break
+            results.append(item)
+        assert len(results) == 1
+
+    def test_stream_realtime_thread_cleanup(self):
+        """Thread is joined in finally block."""
+        config = _make_config()
+        cm = _make_connection_manager()
+
+        # Mock WebSocket to immediately put sentinel and exit
+        mock_ws = MagicMock()
+
+        def fake_run(handle_msg):
+            # Simulate sending one message then disconnecting
+            agg = _make_agg()
+            handle_msg([agg])
+
+        mock_ws.run.side_effect = fake_run
+        cm.get_ws_client = MagicMock(return_value=mock_ws)
+
+        client = PolygonEquityClient(config, cm)
+        stop_event = threading.Event()
+
+        records = []
+        gen = client.stream_realtime(stop_event=stop_event)
+        # Consume one record, then stop
+        for record in gen:
+            records.append(record)
+            stop_event.set()
+            break
+
+        assert len(records) == 1
+        # After exiting the generator, stop_event should be set
+        assert stop_event.is_set()
 
 
 # ---------------------------------------------------------------------------

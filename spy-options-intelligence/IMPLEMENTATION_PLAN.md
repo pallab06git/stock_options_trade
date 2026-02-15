@@ -82,12 +82,17 @@
 - [x] tests/unit/test_health_dashboard.py
 - [ ] Coverage >80%
 
-## Step 11: Real-time SPY Streaming (Week 4)
-- [ ] Update polygon_client.py with stream_realtime()
-- [ ] Implement src/orchestrator/streaming_runner.py
-- [ ] Market hours integration
-- [ ] Heartbeat monitoring
-- [ ] Integration test (5 min live stream)
+## Step 11: Real-time SPY Streaming ✅
+- [x] Fix MarketHours timedelta import bug
+- [x] Add get_ws_client() to ConnectionManager (WebSocket factory)
+- [x] Implement stream_realtime() in PolygonEquityClient (Thread+Queue bridge)
+- [x] Implement StreamingRunner (WebSocket → buffer → validate → dedup → Parquet)
+- [x] Add stream CLI command (--ticker, --config-dir)
+- [x] Market hours enforcement (before + during streaming)
+- [x] Heartbeat monitoring integration (5-min heartbeat, 15-min stall alert)
+- [x] Signal handlers for graceful shutdown (SIGTERM/SIGINT)
+- [x] Unit tests: 2 connection_manager + 4 polygon_client + 10 streaming_runner = 16 new
+- [x] Integration tests: 4 streaming flow tests (pipeline, heartbeat, stats, market close)
 
 ## Step 12: Options Discovery (Week 4)
 - [ ] fetch_spy_opening_price()
@@ -156,4 +161,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 321 passing (unit + integration) | Last updated: 2026-02-14**
+**Total tests: 340 passing (unit + integration) | Last updated: 2026-02-14**

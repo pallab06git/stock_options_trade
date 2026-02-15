@@ -206,3 +206,32 @@ class TestConnectionManager:
         """Close without initializing client should not error."""
         manager = ConnectionManager(config)
         manager.close()  # No client to close — should be a no-op
+
+    @patch("src.utils.connection_manager.WebSocketClient")
+    def test_get_ws_client_delayed_feed(self, mock_ws_cls, config):
+        """Delayed feed config returns WebSocketClient with Feed.Delayed."""
+        manager = ConnectionManager(config)
+        client = manager.get_ws_client()
+        mock_ws_cls.assert_called_once()
+        call_kwargs = mock_ws_cls.call_args
+        assert call_kwargs.kwargs["api_key"] == "pk_test_key_12345678"
+        from polygon.websocket.models import Feed, Market
+        assert call_kwargs.kwargs["feed"] == Feed.Delayed
+        assert call_kwargs.kwargs["market"] == Market.Stocks
+        assert client is mock_ws_cls.return_value
+
+    @patch("src.utils.connection_manager.WebSocketClient")
+    def test_get_ws_client_realtime_feed(self, mock_ws_cls):
+        """Realtime feed config returns WebSocketClient with Feed.RealTime."""
+        config = {
+            "polygon": {
+                "api_key": "pk_test_key_12345678",
+                "feed": "realtime",
+                "rate_limiting": {"total_requests_per_minute": 60},
+            },
+            "retry": {"polygon": {"rate_limit_wait_seconds": 12}},
+        }
+        manager = ConnectionManager(config)
+        manager.get_ws_client()
+        from polygon.websocket.models import Feed
+        assert mock_ws_cls.call_args.kwargs["feed"] == Feed.RealTime

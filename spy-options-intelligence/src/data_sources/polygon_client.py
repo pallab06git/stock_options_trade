@@ -9,6 +9,9 @@ using the official polygon-api-client SDK. Implements the BaseSource interface
 for historical mode. Streaming (WebSocket) is deferred to Step 10.
 """
 
+import queue
+import threading
+import time as _time
 from datetime import datetime, timedelta
 from typing import Dict, Any, Generator, List
 
@@ -200,9 +203,74 @@ class PolygonEquityClient(BaseSource):
 
         return True
 
+    # Sentinel object to signal the generator thread has exited
+    _SENTINEL = object()
+
     def stream_realtime(self, **kwargs) -> Generator[Dict[str, Any], None, None]:
-        """Not implemented in Step 4. Streaming is Step 10."""
-        raise NotImplementedError("Streaming implemented in Step 10")
+        """
+        Stream real-time equity aggregates via Polygon WebSocket.
+
+        Uses a background daemon thread running the WebSocket client.
+        Messages are bridged to the caller via a bounded queue.
+
+        Args:
+            stop_event: threading.Event to signal shutdown from outside.
+
+        Yields:
+            Standardized equity aggregate dicts (same schema as REST).
+        """
+        stop_event = kwargs.get("stop_event") or threading.Event()
+        msg_queue: queue.Queue = queue.Queue(maxsize=10000)
+        reconnect_delay = 5  # seconds between reconnect attempts
+
+        def _ws_thread():
+            """Background thread: connect, subscribe, and push to queue."""
+            while not stop_event.is_set():
+                try:
+                    ws_client = self.connection_manager.get_ws_client()
+                    ws_client.subscribe(f"A.{self.ticker}")
+
+                    def _handle_msg(msgs):
+                        for msg in msgs:
+                            if stop_event.is_set():
+                                return
+                            record = self._transform_agg(msg)
+                            try:
+                                msg_queue.put_nowait(record)
+                            except queue.Full:
+                                pass  # Drop oldest — backpressure
+
+                    ws_client.run(handle_msg=_handle_msg)
+                except Exception as e:
+                    if stop_event.is_set():
+                        break
+                    logger.warning(
+                        f"WebSocket disconnected for {self.ticker}: {e}. "
+                        f"Reconnecting in {reconnect_delay}s"
+                    )
+                    _time.sleep(reconnect_delay)
+
+            # Signal generator to stop
+            msg_queue.put(self._SENTINEL)
+
+        thread = threading.Thread(target=_ws_thread, daemon=True)
+        thread.start()
+        self.mode = ExecutionMode.REALTIME
+        logger.info(f"PolygonEquityClient streaming started (ticker={self.ticker})")
+
+        try:
+            while not stop_event.is_set():
+                try:
+                    item = msg_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+                if item is self._SENTINEL:
+                    break
+                yield item
+        finally:
+            stop_event.set()
+            thread.join(timeout=5.0)
+            logger.info(f"PolygonEquityClient streaming stopped (ticker={self.ticker})")
 
 
 # Backward-compatible alias

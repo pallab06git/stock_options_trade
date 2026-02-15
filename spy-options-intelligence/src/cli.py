@@ -111,6 +111,47 @@ def backfill(config_dir, ticker, start_date, end_date, resume, rate_limit):
         sys.exit(1)
 
 
+@cli.command()
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--ticker",
+    default="SPY",
+    help="Equity ticker symbol to stream (e.g. SPY, TSLA).",
+)
+def stream(config_dir, ticker):
+    """Stream real-time equity data via WebSocket."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+        logger = get_logger()
+
+        from src.orchestrator.streaming_runner import StreamingRunner
+
+        runner = StreamingRunner(config, ticker=ticker)
+        click.echo(f"Starting real-time stream for {ticker}...")
+        stats = runner.run()
+
+        click.echo(f"\n--- Streaming Summary ({ticker}) ---")
+        click.echo(f"Status:          {stats.get('status', 'unknown')}")
+        click.echo(f"Messages received: {stats['messages_received']}")
+        click.echo(f"Messages written:  {stats['messages_written']}")
+        click.echo(f"Invalid:           {stats['messages_invalid']}")
+        click.echo(f"Duplicates:        {stats['messages_duplicates']}")
+        click.echo(f"Batches flushed:   {stats['batches_flushed']}")
+
+    except KeyboardInterrupt:
+        click.echo("\nStream interrupted by user.")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 @cli.command("backfill-all")
 @click.option(
     "--config-dir",
