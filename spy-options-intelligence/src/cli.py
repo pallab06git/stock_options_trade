@@ -8,6 +8,8 @@ Usage:
     python -m src.cli backfill --start-date 2025-01-27 --end-date 2025-01-28
     python -m src.cli backfill --ticker TSLA --start-date 2025-01-27
     python -m src.cli backfill-all --start-date 2025-01-27 --end-date 2025-01-27
+    python -m src.cli backfill-news --start-date 2026-02-01 --end-date 2026-02-09
+    python -m src.cli stream-news
     python -m src.cli discover --date 2026-02-09
     python -m src.cli workers list
     python -m src.cli workers stop --ticker SPY
@@ -296,6 +298,129 @@ def stream_vix(config_dir):
         stats = runner.run()
 
         click.echo(f"\n--- VIX Streaming Summary ---")
+        click.echo(f"Status:            {stats.get('status', 'unknown')}")
+        click.echo(f"Messages received: {stats['messages_received']}")
+        click.echo(f"Messages written:  {stats['messages_written']}")
+        click.echo(f"Invalid:           {stats['messages_invalid']}")
+        click.echo(f"Duplicates:        {stats['messages_duplicates']}")
+        click.echo(f"Batches flushed:   {stats['batches_flushed']}")
+
+    except KeyboardInterrupt:
+        click.echo("\nStream interrupted by user.")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("backfill-news")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--start-date",
+    required=True,
+    help="Start date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    required=True,
+    help="End date (YYYY-MM-DD).",
+)
+@click.option(
+    "--resume/--no-resume",
+    default=False,
+    help="Resume from last checkpoint, skipping completed dates.",
+)
+def backfill_news(config_dir, start_date, end_date, resume):
+    """Run historical news data backfill."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        # Override dates
+        config.setdefault("historical", {}).setdefault("backfill", {})[
+            "start_date"
+        ] = start_date
+        config.setdefault("historical", {}).setdefault("backfill", {})[
+            "end_date"
+        ] = end_date
+
+        setup_logger(config)
+
+        from src.data_sources.news_client import PolygonNewsClient
+        from src.orchestrator.historical_runner import HistoricalRunner
+        from src.processing.deduplicator import Deduplicator
+        from src.processing.validator import RecordValidator
+        from src.utils.connection_manager import ConnectionManager
+
+        cm = ConnectionManager(config)
+        news_client = PolygonNewsClient(config, cm)
+        validator = RecordValidator("news")
+        deduplicator = Deduplicator(key_field="article_id")
+
+        runner = HistoricalRunner(
+            config,
+            ticker="news",
+            connection_manager=cm,
+            client=news_client,
+            validator=validator,
+            deduplicator=deduplicator,
+        )
+        stats = runner.run(resume=resume)
+
+        click.echo(f"\n--- News Backfill Summary ---")
+        click.echo(f"Date range:      {stats['start_date']} → {stats['end_date']}")
+        click.echo(f"Dates processed: {stats['dates_processed']}")
+        click.echo(f"Dates skipped:   {stats['dates_skipped']}")
+        click.echo(f"Total fetched:   {stats['total_fetched']}")
+        click.echo(f"Total written:   {stats['total_written']}")
+        click.echo(f"Invalid:         {stats['total_invalid']}")
+        click.echo(f"Duplicates:      {stats['total_duplicates']}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("stream-news")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+def stream_news(config_dir):
+    """Stream news articles via polling (no WebSocket)."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.data_sources.news_client import PolygonNewsClient
+        from src.orchestrator.streaming_runner import StreamingRunner
+        from src.processing.deduplicator import Deduplicator
+        from src.processing.validator import RecordValidator
+        from src.utils.connection_manager import ConnectionManager
+
+        cm = ConnectionManager(config)
+        news_client = PolygonNewsClient(config, cm)
+        validator = RecordValidator("news")
+        deduplicator = Deduplicator(key_field="article_id")
+
+        runner = StreamingRunner(
+            config,
+            ticker="news",
+            connection_manager=cm,
+            client=news_client,
+            validator=validator,
+            deduplicator=deduplicator,
+        )
+        click.echo("Starting news polling stream...")
+        stats = runner.run()
+
+        click.echo(f"\n--- News Streaming Summary ---")
         click.echo(f"Status:            {stats.get('status', 'unknown')}")
         click.echo(f"Messages received: {stats['messages_received']}")
         click.echo(f"Messages written:  {stats['messages_written']}")

@@ -510,3 +510,34 @@ class TestStreamingRunnerDI:
         assert runner.client is not None
         assert runner.validator is not None
         assert runner.ticker == "SPY"
+
+    @patch("src.orchestrator.streaming_runner.ErrorAggregator")
+    @patch("src.orchestrator.streaming_runner.PerformanceMonitor")
+    @patch("src.orchestrator.streaming_runner.HeartbeatMonitor")
+    @patch("src.orchestrator.streaming_runner.MarketHours")
+    @patch("src.orchestrator.streaming_runner.ParquetSink")
+    def test_deduplicator_injection(
+        self, mock_sink, mock_mh, mock_hb, mock_perf, mock_err, tmp_path
+    ):
+        """Injected Deduplicator is used instead of the default."""
+        from src.processing.deduplicator import Deduplicator
+        from src.orchestrator.streaming_runner import StreamingRunner
+
+        config = _make_config(tmp_path)
+        custom_dedup = Deduplicator(key_field="article_id")
+
+        mock_cm = MagicMock()
+        mock_client = MagicMock()
+        mock_validator = MagicMock()
+
+        runner = StreamingRunner(
+            config,
+            ticker="news",
+            connection_manager=mock_cm,
+            client=mock_client,
+            validator=mock_validator,
+            deduplicator=custom_dedup,
+        )
+
+        assert runner.deduplicator is custom_dedup
+        assert runner.deduplicator.key_field == "article_id"

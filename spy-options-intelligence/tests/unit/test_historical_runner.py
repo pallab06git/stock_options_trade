@@ -735,3 +735,28 @@ class TestTickerParam:
 
         assert stats["total_fetched"] == 1
         assert stats["total_written"] == 1
+
+    def test_deduplicator_injection(self):
+        """Injected Deduplicator is used instead of the default."""
+        from src.processing.deduplicator import Deduplicator
+
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-27")
+        custom_dedup = Deduplicator(key_field="article_id")
+
+        mock_cm = MagicMock()
+        mock_client = MagicMock()
+        mock_validator = MagicMock()
+
+        with patch("src.orchestrator.historical_runner.ParquetSink"):
+            from src.orchestrator.historical_runner import HistoricalRunner
+            runner = HistoricalRunner(
+                config,
+                ticker="news",
+                connection_manager=mock_cm,
+                client=mock_client,
+                validator=mock_validator,
+                deduplicator=custom_dedup,
+            )
+
+        assert runner.deduplicator is custom_dedup
+        assert runner.deduplicator.key_field == "article_id"

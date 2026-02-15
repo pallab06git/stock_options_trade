@@ -120,11 +120,18 @@
 - [x] CLI: stream-vix command (--config-dir)
 - [x] Unit tests: 13 VIX client + 2 historical DI + 2 streaming DI = 17 new
 
-## Step 15: News Data (Week 5)
-- [ ] Implement src/data_sources/news_client.py
-- [ ] Sentiment extraction
-- [ ] 5-min polling (configurable)
-- [ ] Integration test
+## Step 15: News Data ✅
+- [x] Implement src/data_sources/news_client.py (PolygonNewsClient)
+- [x] Historical backfill via list_ticker_news() REST API (date-by-date)
+- [x] Polling-based "streaming" (configurable interval, queue-based bridge)
+- [x] Sentiment extraction from Polygon insights (ticker-matched)
+- [x] ISO 8601 published_utc → Unix ms timestamp conversion
+- [x] Deduplicator DI in HistoricalRunner (optional deduplicator param)
+- [x] Deduplicator DI in StreamingRunner (optional deduplicator param)
+- [x] CLI: backfill-news command (--start-date, --end-date, --resume)
+- [x] CLI: stream-news command (--config-dir)
+- [x] Unit tests: 18 news client + 1 historical DI + 1 streaming DI = 20 new
+- [x] Integration tests: 11 live Polygon tests (connection, schema, validator, dedup, full pipeline)
 
 ## Step 16: Data Consolidation (Week 6)
 - [ ] Implement src/processing/consolidator.py
@@ -172,4 +179,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 384 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
+**Total tests: 415 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**

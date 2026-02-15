@@ -39,6 +39,7 @@ class HistoricalRunner:
         connection_manager: "ConnectionManager | None" = None,
         client: "PolygonEquityClient | None" = None,
         validator: "RecordValidator | None" = None,
+        deduplicator: "Deduplicator | None" = None,
     ):
         """
         Args:
@@ -47,6 +48,7 @@ class HistoricalRunner:
             connection_manager: Optional pre-built ConnectionManager (for DI).
             client: Optional pre-built data source client (for DI).
             validator: Optional pre-built RecordValidator (for DI).
+            deduplicator: Optional pre-built Deduplicator (for DI).
         """
         self.config = config
         self.ticker = ticker
@@ -55,7 +57,7 @@ class HistoricalRunner:
         self.connection_manager = connection_manager or ConnectionManager(config)
         self.client = client or PolygonEquityClient(config, self.connection_manager, ticker=self.ticker)
         self.validator = validator or RecordValidator.for_equity(self.ticker)
-        self.deduplicator = Deduplicator(key_field="timestamp")
+        self.deduplicator = deduplicator or Deduplicator(key_field="timestamp")
         self.sink = ParquetSink(config)
 
         # Backfill settings
