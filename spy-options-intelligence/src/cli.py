@@ -11,6 +11,7 @@ Usage:
     python -m src.cli backfill-news --start-date 2026-02-01 --end-date 2026-02-09
     python -m src.cli stream-news
     python -m src.cli discover --date 2026-02-09
+    python -m src.cli simulate --source spy --date 2026-02-10 --speed 10
     python -m src.cli workers list
     python -m src.cli workers stop --ticker SPY
     python -m src.cli workers stop --all
@@ -528,6 +529,71 @@ def prepare_training(config_dir, start_date, end_date):
         click.echo(f"Prediction window:  {stats['prediction_window_minutes']} min")
         click.echo(f"Min coverage:       {stats['min_target_coverage_pct']}%")
 
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Feed simulator command
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--source",
+    required=True,
+    help="Data source to replay (spy, vix, options, news, consolidated).",
+)
+@click.option(
+    "--date",
+    required=True,
+    help="Date of the Parquet file to replay (YYYY-MM-DD).",
+)
+@click.option(
+    "--speed",
+    default=1.0,
+    type=float,
+    help="Playback speed multiplier (1.0 = real-time, 10.0 = 10x, 0 = no delay).",
+)
+def simulate(config_dir, source, date, speed):
+    """Replay historical data as a simulated real-time stream."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.orchestrator.simulator import FeedSimulator
+
+        sim = FeedSimulator(config, source=source, date=date, speed=speed)
+        click.echo(
+            f"Starting feed simulation: {source}/{date} at {speed}x speed..."
+        )
+
+        count = 0
+        try:
+            for record in sim.stream_realtime():
+                count += 1
+        except KeyboardInterrupt:
+            pass
+
+        stats = sim.get_stats()
+        click.echo(f"\n--- Simulation Summary ---")
+        click.echo(f"Source:           {stats['source']}")
+        click.echo(f"Date:             {stats['date']}")
+        click.echo(f"Speed:            {stats['speed']}x")
+        click.echo(f"Records loaded:   {stats['records_loaded']}")
+        click.echo(f"Records emitted:  {stats['records_emitted']}")
+        click.echo(f"Total delay:      {stats['total_delay_seconds']:.1f}s")
+
+    except FileNotFoundError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

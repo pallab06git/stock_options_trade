@@ -70,6 +70,10 @@ consolidation:
   news:
     max_lookback_hours: 24
 
+simulator:
+  speed_multiplier: 1.0       # 1.0 = real-time, 10.0 = 10x, 0 = no delay
+  max_delay_per_gap_sec: 5.0  # Cap per-record delay to avoid hanging
+
 signal_validation:
   prediction_window_minutes: 120
   padding_strategy: "last_price"

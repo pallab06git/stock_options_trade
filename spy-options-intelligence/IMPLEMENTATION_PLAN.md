@@ -171,11 +171,17 @@
 ## Step 18: Late Data Handler — DEFERRED to Phase 2
 - [ ] Deferred: will use Kafka + Spark watermarking in Phase 2
 
-## Step 19: Feed Simulator (Week 7)
-- [ ] Implement src/orchestrator/simulator.py
-- [ ] Replay historical data as real-time
-- [ ] Configurable playback speed
-- [ ] All sources supported
+## Step 19: Feed Simulator ✅
+- [x] Implement src/orchestrator/simulator.py (FeedSimulator class)
+- [x] Replay historical Parquet data as simulated real-time stream
+- [x] Configurable playback speed (1x real-time, Nx faster, 0 = no delay)
+- [x] Per-record delay based on timestamp gaps, capped at 5s per gap
+- [x] All sources supported (spy, vix, options, news, consolidated)
+- [x] BaseSource-compatible stream_realtime() interface for StreamingRunner DI
+- [x] stop_event support for graceful interruption
+- [x] Config: simulator section in settings.yaml (speed_multiplier, max_delay_per_gap_sec)
+- [x] CLI: simulate command (--source, --date, --speed)
+- [x] Unit tests (24 tests — init, load, streaming, stop_event, delay cap, stubs, stats, source dirs)
 
 ## Step 20: Integration Tests (Week 7)
 - [ ] tests/integration/test_historical_flow.py
@@ -198,4 +204,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 495 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
+**Total tests: 519 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
