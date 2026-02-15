@@ -32,19 +32,29 @@ class HistoricalRunner:
     with optional checkpoint/resume to skip already-completed dates.
     """
 
-    def __init__(self, config: Dict[str, Any], ticker: str = "SPY"):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        ticker: str = "SPY",
+        connection_manager: "ConnectionManager | None" = None,
+        client: "PolygonEquityClient | None" = None,
+        validator: "RecordValidator | None" = None,
+    ):
         """
         Args:
             config: Full merged configuration dict.
-            ticker: Equity ticker symbol (e.g. "SPY", "TSLA").
+            ticker: Equity ticker symbol (e.g. "SPY", "TSLA") or index (e.g. "I:VIX").
+            connection_manager: Optional pre-built ConnectionManager (for DI).
+            client: Optional pre-built data source client (for DI).
+            validator: Optional pre-built RecordValidator (for DI).
         """
         self.config = config
         self.ticker = ticker
 
-        # Pipeline components
-        self.connection_manager = ConnectionManager(config)
-        self.client = PolygonEquityClient(config, self.connection_manager, ticker=self.ticker)
-        self.validator = RecordValidator.for_equity(self.ticker)
+        # Pipeline components — use injected dependencies or create defaults
+        self.connection_manager = connection_manager or ConnectionManager(config)
+        self.client = client or PolygonEquityClient(config, self.connection_manager, ticker=self.ticker)
+        self.validator = validator or RecordValidator.for_equity(self.ticker)
         self.deduplicator = Deduplicator(key_field="timestamp")
         self.sink = ParquetSink(config)
 

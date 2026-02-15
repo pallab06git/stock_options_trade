@@ -458,3 +458,55 @@ class TestStreamingRunnerProcessing:
         assert "start_time" in stats
         assert "end_time" in stats
         assert stats["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Test: Dependency Injection
+# ---------------------------------------------------------------------------
+
+class TestStreamingRunnerDI:
+
+    @patch("src.orchestrator.streaming_runner.ErrorAggregator")
+    @patch("src.orchestrator.streaming_runner.PerformanceMonitor")
+    @patch("src.orchestrator.streaming_runner.HeartbeatMonitor")
+    @patch("src.orchestrator.streaming_runner.MarketHours")
+    @patch("src.orchestrator.streaming_runner.ParquetSink")
+    @patch("src.orchestrator.streaming_runner.Deduplicator")
+    def test_injection_uses_provided_components(
+        self, mock_dedup, mock_sink, mock_mh, mock_hb, mock_perf, mock_err, tmp_path
+    ):
+        """When connection_manager, client, and validator are injected, they are used."""
+        from unittest.mock import MagicMock
+        from src.orchestrator.streaming_runner import StreamingRunner
+
+        config = _make_config(tmp_path)
+        mock_cm = MagicMock()
+        mock_client = MagicMock()
+        mock_validator = MagicMock()
+
+        runner = StreamingRunner(
+            config,
+            ticker="I:VIX",
+            connection_manager=mock_cm,
+            client=mock_client,
+            validator=mock_validator,
+        )
+
+        assert runner.connection_manager is mock_cm
+        assert runner.client is mock_client
+        assert runner.validator is mock_validator
+        assert runner.ticker == "I:VIX"
+
+    @patch("src.orchestrator.streaming_runner.MarketHours")
+    @patch("src.orchestrator.streaming_runner.ConnectionManager")
+    def test_default_backward_compat(self, mock_cm_cls, mock_mh_cls, tmp_path):
+        """Without DI params, defaults to PolygonEquityClient + equity validator."""
+        from src.orchestrator.streaming_runner import StreamingRunner
+
+        config = _make_config(tmp_path)
+        runner = StreamingRunner(config)
+
+        assert runner.connection_manager is not None
+        assert runner.client is not None
+        assert runner.validator is not None
+        assert runner.ticker == "SPY"

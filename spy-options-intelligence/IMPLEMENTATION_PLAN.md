@@ -110,10 +110,15 @@
 - [x] Add stream-options CLI command (--date, --config-dir)
 - [x] Unit tests: 4 client streaming + 7 runner + 2 parquet dedup = 13 new
 
-## Step 14: VIX Data (Week 5)
-- [ ] VIX historical (Polygon I:VIX)
-- [ ] VIX real-time (WebSocket)
-- [ ] Integration test
+## Step 14: VIX Data ✅
+- [x] Implement src/data_sources/polygon_vix_client.py (PolygonVIXClient)
+- [x] Historical fetch via REST (I:VIX, date-by-date, transform with source="vix")
+- [x] Real-time streaming via WebSocket (Market.Indices, "A.I:VIX" subscription)
+- [x] Dependency injection in HistoricalRunner (connection_manager, client, validator)
+- [x] Dependency injection in StreamingRunner (connection_manager, client, validator)
+- [x] CLI: backfill-vix command (--start-date, --end-date, --resume)
+- [x] CLI: stream-vix command (--config-dir)
+- [x] Unit tests: 13 VIX client + 2 historical DI + 2 streaming DI = 17 new
 
 ## Step 15: News Data (Week 5)
 - [ ] Implement src/data_sources/news_client.py
@@ -167,4 +172,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 367 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
+**Total tests: 384 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**

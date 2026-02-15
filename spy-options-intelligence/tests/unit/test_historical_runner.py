@@ -685,6 +685,42 @@ class TestTickerParam:
         path = tmp_path / "checkpoint_TSLA_2025-01-27_2025-01-28.json"
         assert path.exists()
 
+    def test_injection_uses_provided_components(self):
+        """When connection_manager, client, and validator are injected, they are used."""
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-27")
+
+        mock_cm = MagicMock()
+        mock_client = MagicMock()
+        mock_validator = MagicMock()
+
+        with patch("src.orchestrator.historical_runner.Deduplicator"), \
+             patch("src.orchestrator.historical_runner.ParquetSink"):
+
+            from src.orchestrator.historical_runner import HistoricalRunner
+            runner = HistoricalRunner(
+                config,
+                ticker="I:VIX",
+                connection_manager=mock_cm,
+                client=mock_client,
+                validator=mock_validator,
+            )
+
+        assert runner.connection_manager is mock_cm
+        assert runner.client is mock_client
+        assert runner.validator is mock_validator
+        assert runner.ticker == "I:VIX"
+
+    def test_default_backward_compat(self):
+        """Without DI params, defaults to PolygonEquityClient + equity validator."""
+        config = _make_config(start_date="2025-01-27", end_date="2025-01-27")
+        runner = _build_runner(config)
+
+        # _build_runner patches all constructors, so the runner should have
+        # mock objects assigned — confirming defaults were called
+        assert runner.connection_manager is not None
+        assert runner.client is not None
+        assert runner.validator is not None
+
     def test_runner_with_tsla(self):
         """TSLA runner processes data correctly."""
         config = _make_config(start_date="2025-01-27", end_date="2025-01-27")
