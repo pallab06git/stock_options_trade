@@ -1,0 +1,116 @@
+# ============================================================================
+# Streaming Configuration
+# ============================================================================
+# Config tuned for real-time data streaming with monitoring.
+#
+# Usage:
+#   python -m src.cli stream --config-dir config/examples --ticker SPY
+#   python -m src.cli stream-vix --config-dir config/examples
+#   python -m src.cli stream-options --config-dir config/examples --date 2025-01-15
+#   python -m src.cli stream-news --config-dir config/examples
+#
+# Monitor health:
+#   python -m src.cli health
+#   python -m src.cli health --ticker SPY --json
+#   python -m src.cli schema-check --config-dir config/examples --source spy --date 2025-01-15
+# ============================================================================
+
+# --- Streaming ---
+# Core streaming behaviour: market hours enforcement, heartbeat monitoring.
+streaming:
+  market_hours:
+    timezone: "America/New_York"
+    active_days: [0, 1, 2, 3, 4]     # Mon-Fri only (no weekend compute)
+    start_time: "09:30"               # Regular session open
+    end_time: "16:00"                 # Regular session close
+    # Pre-market / after-hours: NOT supported in Phase 1
+  monitoring:
+    heartbeat_interval_seconds: 300   # Write heartbeat file every 5 min
+    alert_threshold_seconds: 900      # Flag stall after 15 min silence
+
+# --- Monitoring ---
+monitoring:
+  schema:
+    alert_on_new_columns: true        # Detect new fields added by API
+    alert_on_missing_columns: true    # Detect fields dropped by API
+    alert_on_type_changes: true       # Detect type changes (e.g. int→float)
+    auto_update_baseline: true        # Auto-update baseline on drift (streaming may evolve)
+
+  performance:
+    commit_latency_seconds: 120       # Tighter SLA for streaming (2 min vs 5 min batch)
+    throughput_min_records_per_sec: 1  # Low threshold — streaming ticks vary
+    memory_usage_mb_threshold: 500    # Streaming should stay lean
+    error_rate_percent: 2.0           # Slightly higher tolerance for transient WS errors
+    error_window_minutes: 15
+    heartbeat_check_interval_seconds: 60
+    metrics_dump_interval_minutes: 5  # More frequent metric dumps for live monitoring
+    latency_window_size: 200          # Larger window for streaming latency percentiles
+
+# --- Logging ---
+logging:
+  console_level: "INFO"              # INFO keeps console clean during long streams
+  file_level: "DEBUG"                # Full debug in file for post-mortem analysis
+  retention_days: 7                  # Shorter retention — streaming generates more logs
+  execution_log_path: "data/logs/execution"
+  error_log_path: "data/logs/errors"
+
+# --- Orchestrator ---
+orchestrator:
+  tickers: ["SPY"]
+  max_workers: 1
+
+# --- Historical ---
+# Included for completeness; streaming commands ignore these.
+historical:
+  backfill:
+    trading_days: 30
+    batch_size: 10000
+
+# --- Consolidation ---
+consolidation:
+  risk_free_rate: 0.045
+  dividend_yield: 0.015
+  indicators:
+    rsi:
+      period: 14
+    macd:
+      fast: 12
+      slow: 26
+      signal: 9
+    bollinger:
+      period: 20
+      std_dev: 2.0
+  momentum:
+    windows: [5, 30, 60]
+  greeks:
+    min_time_to_expiry_days: 0.01
+    min_iv: 0.01
+    max_iv: 5.0
+    fallback_iv: 0.20
+  news:
+    max_lookback_hours: 24
+
+# --- Simulator ---
+# Useful for testing streaming runners offline.
+simulator:
+  speed_multiplier: 10.0             # Fast replay for development testing
+  max_delay_per_gap_sec: 2.0         # Lower cap for faster iteration
+
+# --- Signal validation ---
+signal_validation:
+  prediction_window_minutes: 120
+  padding_strategy: "last_price"
+  alerts:
+    growth_threshold_pct: 20.0
+    confidence_threshold_pct: 90.0
+    sustained_window_minutes: 5
+    alert_levels:
+      HIGH:
+        growth_pct: 20.0
+        confidence_pct: 90.0
+      MEDIUM:
+        growth_pct: 15.0
+        confidence_pct: 80.0
+      LOW:
+        growth_pct: 10.0
+        confidence_pct: 70.0

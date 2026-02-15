@@ -1,0 +1,100 @@
+# Work Log
+
+Implementation history for SPY Options Intelligence Platform — Phase 1.
+
+---
+
+## Timeline
+
+| Step | Date | Commit | Description | Tests |
+|------|------|--------|-------------|-------|
+| 0 | 2026-02-13 | `c94717d` | Architecture proposal and approval (Rev 6) | — |
+| 1 | 2026-02-13 | `77ba01d` | Configuration system — YAML loading, env var substitution, validation | 15 |
+| 2 | 2026-02-13 | `5842203` | Logging infrastructure — loguru, credential redaction, heartbeat integration | 14 |
+| 3 | 2026-02-13 | `65bbe31` | Retry handler and connection manager — token-bucket rate limiting | 32 |
+| 4 | 2026-02-13 | `c1bff24` | Polygon SPY client — historical minute-level data via REST | 18 |
+| 5 | 2026-02-13 | `2b1bdc3` | Parquet storage sink — date partitioning, Snappy compression | 14 |
+| 6 | 2026-02-13 | `6cc40da` | Data validation and deduplication modules | 23 |
+| 7 | 2026-02-14 | `581470c` | Historical runner — CLI, checkpoint/resume, integration test | 28 |
+| 8 | 2026-02-14 | `fcde8a0` | Performance monitoring and error aggregation | 100 |
+| 9 | 2026-02-14 | `0316195` | Multi-ticker parallel execution — ParallelRunner, ProcessManager, HealthDashboard | 103 |
+| 10 | — | — | Unit test suite (accumulated across Steps 1–9) | — |
+| 11 | 2026-02-14 | `7a40bc4` | Real-time WebSocket streaming with market hours enforcement | 16 |
+| 12 | 2026-02-14 | `c5c3ef7` | Options contract discovery — ±1% strike range, JSON persistence | 14 |
+| 13 | 2026-02-14 | `1a82188` | Options streaming — compound deduplication (ticker + timestamp) | 13 |
+| 14 | 2026-02-14 | `d31e9eb` | VIX data ingestion — historical REST + real-time WebSocket | 17 |
+| 15 | 2026-02-14 | `4c5ebff` | News data ingestion — backfill + polling-based streaming | 20 |
+| 16 | 2026-02-14 | `80c6d5c` | Data consolidation — per-option-per-minute flat schema, Greeks, indicators | 59 |
+| 17 | 2026-02-14 | `64b88b9` | Schema drift detection — baseline persistence, configurable alerts | 20 |
+| 18 | — | — | Late data handler — deferred to Phase 2 (Kafka + Spark watermarking) | — |
+| 19 | 2026-02-14 | `88a7326` | Feed simulator — replay historical data as real-time stream | 24 |
+| 20 | 2026-02-14 | `9d21cc8` | Integration tests — historical, real-time, and full pipeline flows | 24 |
+| 21 | 2026-02-14 | — | Documentation — README, API reference, example configs, work log | — |
+
+**Total**: 543 tests passing + 7 live tests (skipped outside market hours)
+
+---
+
+## Key Decisions
+
+### Architecture (Step 0)
+- Generator-based data flow for memory efficiency
+- Dependency injection in runners for source/sink flexibility
+- Token-bucket rate limiter shared across all sources
+- Checkpoint/resume via JSON files (not database)
+
+### Multi-Ticker (Step 9)
+- Renamed `PolygonSPYClient` → `PolygonEquityClient` with ticker parameter
+- Per-session monitoring (`session_label`) for parallel workers
+- Subprocess-based parallelism (not threading) for isolation
+
+### Consolidation (Step 16)
+- Per-option-per-minute flat schema (no nested lists in Parquet)
+- Greeks computed per-row as scalars (delta, gamma, theta, vega, rho, IV)
+- `TrainingDataPrep` separated from `Consolidator` — target prices are offline ML prep only
+- `merge_asof` for VIX and news time alignment
+
+### Deferred (Step 18)
+- Late data handling deferred to Phase 2 — will use Kafka + Spark watermarking
+- Phase 1 rejects data older than current day during streaming
+
+---
+
+## Data Sources Implemented
+
+| Source | Historical | Real-time | CLI Commands |
+|--------|-----------|-----------|--------------|
+| SPY Equity | REST (`get_aggs`) | WebSocket (`Feed.Delayed`) | `backfill`, `stream` |
+| Options | — | WebSocket (`Market.Options`) | `discover`, `stream-options` |
+| VIX Index | REST (`I:VIX`) | WebSocket (`Market.Indices`) | `backfill-vix`, `stream-vix` |
+| News | REST (`list_ticker_news`) | Polling (configurable interval) | `backfill-news`, `stream-news` |
+
+---
+
+## Test Coverage by Module
+
+| Module | Tests | Key Areas |
+|--------|-------|-----------|
+| Config loader | 15 | YAML merge, env vars, validation |
+| Logger | 14 | Redaction, file rotation, heartbeat |
+| Retry + Connection | 32 | Backoff, jitter, rate limit, 429 handling |
+| Polygon client | 19 | REST fetch, pagination, transform |
+| Parquet sink | 14 | Write, dedup, partition, compression |
+| Validator | 21 | Schema validation, batch split, error messages |
+| Deduplicator | 2 | Key tracking, batch dedup |
+| Historical runner | 32 | Pipeline, checkpoint/resume, date iteration |
+| Performance monitor | 70 | Latency, throughput, stale ops, memory, alerts |
+| Error aggregator | 30 | Rate calc, windowing, alert threshold |
+| Parallel runner | 12 | Subprocess spawn, registry, results |
+| Process manager | 8 | List/stop workers, SIGTERM |
+| Health dashboard | 11 | Session aggregation, table format |
+| Streaming runner | 10 | Buffer, flush, heartbeat, market close |
+| Options client | 14 | Discovery, strike range, save/load |
+| Options streaming | 7 | Compound dedup, contract loading |
+| VIX client | 13 | Historical, streaming, transform |
+| News client | 18 | Backfill, polling, sentiment extraction |
+| Consolidator | 39 | Aggregation, indicators, Greeks, alignment |
+| Training data prep | 20 | Target prices, coverage filter, date iteration |
+| Schema monitor | 20 | Baseline, drift detection, alerts, auto-update |
+| Feed simulator | 24 | Load, replay, speed, delay cap, stop event |
+| Integration tests | 24 | Historical flow, real-time flow, full pipeline |

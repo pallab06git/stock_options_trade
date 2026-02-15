@@ -1,0 +1,112 @@
+# ============================================================================
+# Full Pipeline Configuration
+# ============================================================================
+# Complete config for ingest-all + consolidate workflow.
+# Covers SPY, VIX, Options, News backfill followed by consolidation.
+#
+# Typical workflow:
+#   1. python -m src.cli backfill --config-dir config/examples --start-date 2025-01-02 --end-date 2025-01-31
+#   2. python -m src.cli backfill-vix --config-dir config/examples --start-date 2025-01-02 --end-date 2025-01-31
+#   3. python -m src.cli discover --config-dir config/examples --date 2025-01-02
+#   4. python -m src.cli backfill-news --config-dir config/examples --start-date 2025-01-02 --end-date 2025-01-31
+#   5. python -m src.cli consolidate --config-dir config/examples --date 2025-01-02
+#   6. python -m src.cli prepare-training --config-dir config/examples --start-date 2025-01-02 --end-date 2025-01-31
+# ============================================================================
+
+# --- Streaming ---
+streaming:
+  market_hours:
+    timezone: "America/New_York"
+    active_days: [0, 1, 2, 3, 4]   # Monday-Friday
+    start_time: "09:30"
+    end_time: "16:00"
+  monitoring:
+    heartbeat_interval_seconds: 300  # 5-minute heartbeat
+    alert_threshold_seconds: 900     # Alert after 15 min silence
+
+# --- Monitoring ---
+monitoring:
+  schema:
+    alert_on_new_columns: true
+    alert_on_missing_columns: true
+    alert_on_type_changes: true
+    auto_update_baseline: false
+
+  performance:
+    commit_latency_seconds: 300
+    throughput_min_records_per_sec: 50    # Lower for multi-source workload
+    memory_usage_mb_threshold: 2000      # Higher for consolidation pipeline
+    error_rate_percent: 1.0
+    error_window_minutes: 15
+    heartbeat_check_interval_seconds: 60
+    metrics_dump_interval_minutes: 15
+    latency_window_size: 100
+
+# --- Logging ---
+logging:
+  console_level: "INFO"
+  file_level: "DEBUG"
+  retention_days: 30
+  execution_log_path: "data/logs/execution"
+  error_log_path: "data/logs/errors"
+
+# --- Orchestrator ---
+orchestrator:
+  tickers: ["SPY"]
+  max_workers: 1
+
+# --- Historical ---
+historical:
+  backfill:
+    trading_days: 30
+    batch_size: 10000
+
+# --- Consolidation ---
+# Merges SPY, VIX, Options, and News into per-option-per-minute rows
+# with technical indicators, Greeks, and sentiment.
+consolidation:
+  risk_free_rate: 0.045              # 10-year Treasury yield (update periodically)
+  dividend_yield: 0.015              # SPY trailing dividend yield
+  indicators:
+    rsi:
+      period: 14                     # 14-minute RSI
+    macd:
+      fast: 12
+      slow: 26
+      signal: 9
+    bollinger:
+      period: 20
+      std_dev: 2.0
+  momentum:
+    windows: [5, 30, 60]             # ROC windows in minutes
+  greeks:
+    min_time_to_expiry_days: 0.01    # Skip near-zero expiry
+    min_iv: 0.01                     # Floor for implied volatility
+    max_iv: 5.0                      # Cap for implied volatility
+    fallback_iv: 0.20                # Used when IV computation fails
+  news:
+    max_lookback_hours: 24           # Match news within 24h before each minute
+
+# --- Training data prep ---
+signal_validation:
+  prediction_window_minutes: 120     # 2-hour forward price window
+  padding_strategy: "last_price"     # Pad missing future prices with last known
+  alerts:
+    growth_threshold_pct: 20.0
+    confidence_threshold_pct: 90.0
+    sustained_window_minutes: 5
+    alert_levels:
+      HIGH:
+        growth_pct: 20.0
+        confidence_pct: 90.0
+      MEDIUM:
+        growth_pct: 15.0
+        confidence_pct: 80.0
+      LOW:
+        growth_pct: 10.0
+        confidence_pct: 70.0
+
+# --- Simulator ---
+simulator:
+  speed_multiplier: 1.0
+  max_delay_per_gap_sec: 5.0

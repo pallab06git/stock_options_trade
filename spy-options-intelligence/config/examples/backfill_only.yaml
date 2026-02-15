@@ -1,0 +1,67 @@
+# ============================================================================
+# Backfill-Only Configuration
+# ============================================================================
+# Minimal config for historical data ingestion (no streaming, no consolidation).
+# Usage:
+#   python -m src.cli backfill --config-dir config/examples --start-date 2025-01-02 --end-date 2025-01-31
+#   python -m src.cli backfill-vix --config-dir config/examples --start-date 2025-01-02 --end-date 2025-01-31
+# ============================================================================
+
+# --- Streaming (disabled — not needed for backfill) ---
+streaming:
+  market_hours:
+    timezone: "America/New_York"
+    active_days: [0, 1, 2, 3, 4]
+    start_time: "09:30"
+    end_time: "16:00"
+  monitoring:
+    heartbeat_interval_seconds: 300
+    alert_threshold_seconds: 900
+
+# --- Monitoring ---
+monitoring:
+  schema:
+    alert_on_new_columns: true
+    alert_on_missing_columns: true
+    alert_on_type_changes: true
+    auto_update_baseline: false   # Set true to auto-update after drift
+
+  performance:
+    commit_latency_seconds: 300
+    throughput_min_records_per_sec: 100
+    memory_usage_mb_threshold: 1000
+    error_rate_percent: 1.0
+    error_window_minutes: 15
+    heartbeat_check_interval_seconds: 60
+    metrics_dump_interval_minutes: 15
+    latency_window_size: 100
+
+# --- Logging ---
+logging:
+  console_level: "INFO"            # INFO for normal use, DEBUG for troubleshooting
+  file_level: "DEBUG"
+  retention_days: 30
+  execution_log_path: "data/logs/execution"
+  error_log_path: "data/logs/errors"
+
+# --- Orchestrator ---
+orchestrator:
+  tickers: ["SPY"]                 # Add more: ["SPY", "QQQ", "TSLA"]
+  max_workers: 1                   # Increase for parallel multi-ticker backfill
+
+# --- Historical backfill settings ---
+historical:
+  backfill:
+    trading_days: 30               # Default lookback when no --start-date / --end-date
+    batch_size: 10000              # Records per batch to validator/sink
+
+# --- Polygon API ---
+# Loaded from sources.yaml (api_key, rate limits, per-ticker config).
+# Override rate limit for faster backfill with paid plan:
+#   python -m src.cli backfill --rate-limit 100 --start-date ...
+
+# --- Sinks ---
+# Loaded from sinks.yaml (Parquet path, compression, row group size).
+
+# --- Retry ---
+# Loaded from retry_policy.yaml (max attempts, backoff, jitter).
