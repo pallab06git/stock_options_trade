@@ -133,18 +133,26 @@
 - [x] Unit tests: 18 news client + 1 historical DI + 1 streaming DI = 20 new
 - [x] Integration tests: 11 live Polygon tests (connection, schema, validator, dedup, full pipeline)
 
-## Step 16: Data Consolidation ✅
+## Step 16: Data Consolidation ✅ (Restructured: per-option-per-minute flat schema)
 - [x] Install dependencies (py_vollib, ta, scipy)
-- [x] Add consolidation config to settings.yaml
-- [x] Implement src/processing/consolidator.py (full consolidation engine)
-- [x] Time alignment (SPY + VIX via merge_asof forward-fill)
-- [x] Compute Greeks (py_vollib Black-Scholes: delta, gamma, theta, vega, rho, IV)
-- [x] Compute momentum (price_change + ROC for windows [5, 30, 60])
-- [x] Compute technical indicators (ta library: RSI, MACD, Bollinger Bands)
+- [x] Add consolidation + signal_validation config to settings.yaml
+- [x] Restructure src/processing/consolidator.py — per-option-per-minute flat schema
+- [x] Per-minute aggregation (SPY OHLCV+VWAP, VIX OHLC, Options per-ticker OHLCV+avg)
+- [x] Time alignment (VIX → SPY minute grid via merge_asof forward-fill)
+- [x] Compute technical indicators on 1-min SPY (RSI, MACD, Bollinger Bands)
+- [x] Compute momentum on 1-min SPY (price_change + ROC for windows [5, 30, 60])
 - [x] Attach news sentiment (merge_asof with lookback tolerance)
-- [x] CLI consolidate command (--date, --config-dir)
-- [x] Unit tests (21 tests)
-- [x] Integration test (1 full pipeline test — all 4 sources)
+- [x] Flatten to one row per option per minute (inner join options × SPY)
+- [x] Compute Greeks per-row as flat scalars (delta, gamma, theta, vega, rho, IV)
+- [x] Separate target_future_prices into TrainingDataPrep module (offline ML training only)
+- [x] CLI consolidate command with stats (minutes, unique_options)
+- [x] CLI prepare-training command (--start-date, --end-date)
+- [x] src/processing/training_data_prep.py — offline training data generation
+  - Reads consolidated Parquet, adds target_future_prices (120-min lookahead)
+  - Filters by min_target_coverage_pct (configurable, default 50%)
+  - Writes to data/processed/training/
+- [x] Unit tests: 39 consolidator + 20 training_data_prep = 59 tests
+- [x] Integration test (1 full pipeline — flat schema, no list columns, no target in consolidator)
 
 ## Step 17: Schema Drift Detection (Week 6)
 - [ ] Implement src/monitoring/schema_monitor.py
@@ -183,4 +191,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 437 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
+**Total tests: 475 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**

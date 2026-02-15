@@ -4,9 +4,21 @@
 
 """Data consolidation engine for multi-source SPY options intelligence.
 
-Merges SPY aggregates, VIX, options (with Greeks), and news sentiment
-into a single enriched dataset per trading day. Output is written to
-date-partitioned Parquet files in data/processed/consolidated/.
+Produces a per-option-per-minute flat dataset by:
+  1. Aggregating raw per-second SPY/VIX/Options data to 1-minute bars
+  2. Aligning VIX onto SPY minute grid (merge_asof forward-fill)
+  3. Computing technical indicators (RSI, MACD, Bollinger) on 1-min SPY
+  4. Computing momentum (price change, ROC) on 1-min SPY
+  5. Attaching latest news sentiment
+  6. Flattening to one row per option per minute (inner join)
+  7. Computing Black-Scholes Greeks per row (flat scalars)
+
+Output is written to date-partitioned Parquet files in
+data/processed/consolidated/.
+
+Note: target_future_prices is NOT computed here. That is handled by
+the TrainingDataPrep module which reads consolidated output and adds
+historical lookahead targets for ML training.
 """
 
 import json
@@ -43,7 +55,11 @@ except ImportError:
 
 
 class Consolidator:
-    """Consolidate SPY, VIX, options, and news data into an enriched dataset."""
+    """Consolidate SPY, VIX, options, and news data into an enriched dataset.
+
+    Output schema: one row per option per minute with flat scalar columns
+    for Greeks, indicators, momentum, and news sentiment.
+    """
 
     def __init__(self, config: Dict[str, Any]):
         cons = config.get("consolidation", {})
@@ -82,19 +98,41 @@ class Consolidator:
     def consolidate(self, date: str) -> Dict[str, Any]:
         """Run the full consolidation pipeline for a single trading day.
 
-        Args:
-            date: Trading date string (YYYY-MM-DD).
+        Pipeline:
+          Load raw per-second data
+          → Aggregate SPY/VIX/Options to 1-min bars
+          → Align VIX onto SPY minute grid
+          → Compute indicators on 1-min SPY
+          → Compute momentum on 1-min SPY
+          → Attach news sentiment
+          → Flatten: one row per option per minute
+          → Compute Greeks per-row (flat scalars)
+          → Write Parquet
 
         Returns:
             Stats dict with status, row counts, and availability flags.
         """
-        spy_df = self._load_spy(date)
-        if spy_df.empty:
+        # Load raw per-second data
+        spy_raw = self._load_spy(date)
+        if spy_raw.empty:
             logger.error(f"No SPY data for {date} — consolidation failed")
             return {"status": "failed", "date": date, "reason": "missing_spy_data"}
 
-        # Rename SPY columns
-        rename_map = {
+        vix_raw = self._load_vix(date)
+        options_raw = self._load_options(date)
+        contracts = self._load_contracts(date)
+        news_df = self._load_news(date)
+
+        vix_available = not vix_raw.empty
+        news_available = not news_df.empty
+
+        # Aggregate to 1-minute bars
+        spy_1m = self._aggregate_spy_per_minute(spy_raw)
+        vix_1m = self._aggregate_vix_per_minute(vix_raw) if vix_available else pd.DataFrame()
+        options_1m = self._aggregate_options_per_minute(options_raw) if not options_raw.empty else pd.DataFrame()
+
+        # Rename SPY columns for consolidated namespace
+        spy_1m = spy_1m.rename(columns={
             "open": "spy_open",
             "high": "spy_high",
             "low": "spy_low",
@@ -102,66 +140,44 @@ class Consolidator:
             "volume": "spy_volume",
             "vwap": "spy_vwap",
             "transactions": "spy_transactions",
-        }
-        spy_df = spy_df.rename(columns=rename_map)
+        })
 
-        # Load optional sources
-        vix_df = self._load_vix(date)
-        options_df = self._load_options(date)
-        contracts = self._load_contracts(date)
-        news_df = self._load_news(date)
+        # Align VIX onto SPY minute grid
+        spy_enriched = self._align_vix(spy_1m, vix_1m)
 
-        vix_available = not vix_df.empty
-        news_available = not news_df.empty
+        # Technical indicators on 1-min SPY bars
+        spy_enriched = self._compute_indicators(spy_enriched)
 
-        # Align VIX
-        df = self._align_vix(spy_df, vix_df)
+        # Momentum on 1-min SPY bars
+        spy_enriched = self._compute_momentum(spy_enriched)
 
-        # Technical indicators
-        df = self._compute_indicators(df)
+        # Attach news sentiment
+        spy_enriched = self._attach_news(spy_enriched, news_df)
 
-        # Momentum
-        df = self._compute_momentum(df)
+        # Flatten: one row per option per minute
+        df = self._flatten_to_per_option(spy_enriched, options_1m, contracts)
 
-        # Greeks
-        greeks_df = self._compute_greeks(options_df, df, contracts)
-        if not greeks_df.empty:
-            df = df.merge(greeks_df, on="timestamp", how="left")
-        else:
-            # Add empty list columns
-            for col in [
-                "option_tickers",
-                "option_strikes",
-                "option_types",
-                "option_close_prices",
-                "option_deltas",
-                "option_gammas",
-                "option_thetas",
-                "option_vegas",
-                "option_rhos",
-                "option_ivs",
-            ]:
-                df[col] = [[] for _ in range(len(df))]
-
-        # News
-        df = self._attach_news(df, news_df)
+        # Compute Greeks per row (flat scalars)
+        df = self._compute_greeks_flat(df)
 
         # Source tag
         df["source"] = "consolidated"
 
-        # Drop original source column if carried over
+        # Drop any stray source columns from merges
         for col in ["source_x", "source_y"]:
             if col in df.columns:
                 df = df.drop(columns=[col])
 
-        contracts_processed = len(contracts)
+        # Compute stats
+        unique_options = df["ticker"].dropna().nunique() if "ticker" in df.columns else 0
+        minutes = df["timestamp"].nunique()
 
         # Write output
         self._write_output(df, date)
 
         logger.info(
             f"Consolidation complete for {date}: "
-            f"{len(df)} rows, {contracts_processed} contracts, "
+            f"{len(df)} rows, {minutes} minutes, {unique_options} options, "
             f"VIX={'yes' if vix_available else 'no'}, "
             f"news={'yes' if news_available else 'no'}"
         )
@@ -170,7 +186,9 @@ class Consolidator:
             "status": "success",
             "date": date,
             "total_rows": len(df),
-            "options_contracts_processed": contracts_processed,
+            "minutes": minutes,
+            "unique_options": unique_options,
+            "options_contracts_processed": len(contracts),
             "vix_available": vix_available,
             "news_available": news_available,
         }
@@ -222,6 +240,75 @@ class Consolidator:
         df = pd.read_parquet(path)
         df = df.sort_values("timestamp").reset_index(drop=True)
         return df
+
+    # ------------------------------------------------------------------
+    # Per-minute aggregation
+    # ------------------------------------------------------------------
+
+    def _aggregate_spy_per_minute(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Aggregate per-second SPY data to 1-minute OHLCV bars."""
+        df = df.copy()
+        df["minute"] = (df["timestamp"] // 60000) * 60000
+
+        agg = df.groupby("minute").agg(
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+            volume=("volume", "sum"),
+            transactions=("transactions", "sum"),
+        ).reset_index()
+
+        # Volume-weighted average price
+        vol_sum = df.groupby("minute")["volume"].sum()
+        vwap_num = df.groupby("minute").apply(
+            lambda g: (g["vwap"] * g["volume"]).sum(), include_groups=False
+        )
+        vwap = (vwap_num / vol_sum).replace([np.inf, -np.inf], np.nan)
+        agg["vwap"] = agg["minute"].map(vwap)
+
+        agg = agg.rename(columns={"minute": "timestamp"})
+        return agg.sort_values("timestamp").reset_index(drop=True)
+
+    def _aggregate_vix_per_minute(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Aggregate per-second VIX data to 1-minute OHLC bars."""
+        if df.empty:
+            return pd.DataFrame()
+        df = df.copy()
+        df["minute"] = (df["timestamp"] // 60000) * 60000
+
+        agg = df.groupby("minute").agg(
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+        ).reset_index()
+
+        agg = agg.rename(columns={"minute": "timestamp"})
+        return agg.sort_values("timestamp").reset_index(drop=True)
+
+    def _aggregate_options_per_minute(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Aggregate per-second options data to 1-minute bars per ticker."""
+        if df.empty:
+            return pd.DataFrame()
+        df = df.copy()
+        df["minute"] = (df["timestamp"] // 60000) * 60000
+
+        agg = df.groupby(["minute", "ticker"]).agg(
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+            volume=("volume", "sum"),
+        ).reset_index()
+
+        # option_avg_price = average of close prices within each minute per ticker
+        avg_price = df.groupby(["minute", "ticker"])["close"].mean().reset_index()
+        avg_price = avg_price.rename(columns={"close": "option_avg_price"})
+        agg = agg.merge(avg_price, on=["minute", "ticker"], how="left")
+
+        agg = agg.rename(columns={"minute": "timestamp"})
+        return agg.sort_values(["timestamp", "ticker"]).reset_index(drop=True)
 
     # ------------------------------------------------------------------
     # VIX alignment
@@ -317,27 +404,52 @@ class Consolidator:
         return df
 
     # ------------------------------------------------------------------
-    # Greeks
+    # News attachment
     # ------------------------------------------------------------------
 
-    def _compute_greeks(
+    def _attach_news(self, df: pd.DataFrame, news_df: pd.DataFrame) -> pd.DataFrame:
+        """Attach the latest news sentiment at-or-before each timestamp."""
+        if news_df.empty:
+            df["news_sentiment"] = np.nan
+            df["news_sentiment_reasoning"] = None
+            df["news_article_id"] = None
+            return df
+
+        lookback_ms = self.news_lookback_hours * 3600 * 1000
+        news_cols = news_df[["timestamp", "sentiment", "sentiment_reasoning", "article_id"]].copy()
+        news_cols = news_cols.rename(
+            columns={
+                "sentiment": "news_sentiment",
+                "sentiment_reasoning": "news_sentiment_reasoning",
+                "article_id": "news_article_id",
+            }
+        )
+
+        merged = pd.merge_asof(
+            df.sort_values("timestamp"),
+            news_cols.sort_values("timestamp"),
+            on="timestamp",
+            direction="backward",
+            tolerance=lookback_ms,
+        )
+        return merged
+
+    # ------------------------------------------------------------------
+    # Flatten to per-option-per-minute
+    # ------------------------------------------------------------------
+
+    def _flatten_to_per_option(
         self,
-        options_df: pd.DataFrame,
-        spy_df: pd.DataFrame,
+        spy_enriched: pd.DataFrame,
+        options_1m: pd.DataFrame,
         contracts: List[Dict],
     ) -> pd.DataFrame:
-        """Compute Black-Scholes Greeks for each SPY timestamp.
+        """Flatten enriched SPY data × options to one row per option per minute.
 
-        Returns a DataFrame with timestamp + list columns for Greeks.
+        If no options or contracts are available, returns SPY-only rows
+        with null option columns (one row per minute).
         """
-        if options_df.empty or not contracts:
-            return pd.DataFrame()
-
-        if not _VOLLIB_AVAILABLE:
-            logger.warning("py_vollib not installed — skipping Greeks")
-            return pd.DataFrame()
-
-        # Build contract lookup: ticker → metadata
+        # Build contract metadata map: ticker → {strike, expiration, type}
         contract_map = {}
         for c in contracts:
             ticker = c.get("ticker", "")
@@ -347,31 +459,73 @@ class Consolidator:
                 "contract_type": c.get("contract_type", "").lower(),
             }
 
-        timestamps = spy_df["timestamp"].values
-        spy_closes = spy_df["spy_close"].values
+        if options_1m.empty or not contracts:
+            # SPY-only: one row per minute, null option columns
+            df = spy_enriched.copy()
+            df["ticker"] = None
+            df["contract_type"] = None
+            df["strike_price"] = np.nan
+            df["time_to_expiry_days"] = np.nan
+            df["option_avg_price"] = np.nan
+            return df
 
-        results = []
-        for ts, spy_price in zip(timestamps, spy_closes):
-            row = self._greeks_at_timestamp(
-                ts, spy_price, options_df, contract_map
-            )
-            results.append(row)
+        # Add contract metadata to options
+        opts = options_1m.copy()
 
-        return pd.DataFrame(results)
+        # Filter to only tickers present in contracts
+        opts = opts[opts["ticker"].isin(contract_map)].copy()
+        if opts.empty:
+            df = spy_enriched.copy()
+            df["ticker"] = None
+            df["contract_type"] = None
+            df["strike_price"] = np.nan
+            df["time_to_expiry_days"] = np.nan
+            df["option_avg_price"] = np.nan
+            return df
 
-    def _greeks_at_timestamp(
-        self,
-        timestamp: int,
-        spy_price: float,
-        options_df: pd.DataFrame,
-        contract_map: Dict[str, Dict],
-    ) -> Dict[str, Any]:
-        """Compute Greeks for all option contracts at a single timestamp."""
-        row: Dict[str, Any] = {"timestamp": timestamp}
-        tickers = []
-        strikes = []
-        types = []
-        close_prices = []
+        opts["strike_price"] = opts["ticker"].map(lambda t: contract_map[t]["strike_price"])
+        opts["contract_type"] = opts["ticker"].map(lambda t: contract_map[t]["contract_type"])
+        opts["expiration_date"] = opts["ticker"].map(lambda t: contract_map[t]["expiration_date"])
+
+        # Compute time to expiry for each row
+        def _compute_tte(row):
+            try:
+                ts_dt = datetime.fromtimestamp(row["timestamp"] / 1000, tz=timezone.utc)
+                exp_dt = datetime.strptime(row["expiration_date"], "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
+                return (exp_dt - ts_dt).total_seconds() / 86400
+            except (ValueError, TypeError):
+                return np.nan
+
+        opts["time_to_expiry_days"] = opts.apply(_compute_tte, axis=1)
+
+        # Select option columns for the join
+        opt_cols = opts[["timestamp", "ticker", "contract_type", "strike_price",
+                         "time_to_expiry_days", "option_avg_price"]]
+
+        # Inner join on timestamp
+        df = spy_enriched.merge(opt_cols, on="timestamp", how="inner")
+
+        return df.sort_values(["timestamp", "ticker"]).reset_index(drop=True)
+
+    # ------------------------------------------------------------------
+    # Greeks (flat per-row)
+    # ------------------------------------------------------------------
+
+    def _compute_greeks_flat(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Compute Black-Scholes Greeks as flat scalar columns per row.
+
+        Rows without a ticker (SPY-only) or with missing data get NaN.
+        """
+        greek_cols = ["delta", "gamma", "theta", "vega", "rho", "implied_volatility"]
+
+        if not _VOLLIB_AVAILABLE:
+            logger.warning("py_vollib not installed — skipping Greeks")
+            for col in greek_cols:
+                df[col] = np.nan
+            return df
+
         deltas = []
         gammas = []
         thetas = []
@@ -379,43 +533,36 @@ class Consolidator:
         rhos = []
         ivs = []
 
-        # Find closest options data at or before this timestamp
-        mask = options_df["timestamp"] <= timestamp
-        if not mask.any():
-            row.update(self._empty_greeks_lists())
-            return row
-
-        ts_options = options_df[mask].drop_duplicates(subset=["ticker"], keep="last")
-
-        for _, opt in ts_options.iterrows():
-            ticker = opt.get("ticker", "")
-            if ticker not in contract_map:
+        for _, row in df.iterrows():
+            ticker = row.get("ticker")
+            if ticker is None or pd.isna(row.get("strike_price")) or pd.isna(row.get("spy_close")):
+                deltas.append(np.nan)
+                gammas.append(np.nan)
+                thetas.append(np.nan)
+                vegas.append(np.nan)
+                rhos.append(np.nan)
+                ivs.append(np.nan)
                 continue
 
-            meta = contract_map[ticker]
-            strike = meta["strike_price"]
-            exp_str = meta["expiration_date"]
-            ctype = meta["contract_type"]
-
-            # Calculate time to expiry
-            try:
-                ts_dt = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
-                exp_dt = datetime.strptime(exp_str, "%Y-%m-%d").replace(
-                    tzinfo=timezone.utc
-                )
-                tte_days = (exp_dt - ts_dt).total_seconds() / 86400
-            except (ValueError, TypeError):
+            tte_days = row.get("time_to_expiry_days", 0)
+            if pd.isna(tte_days) or tte_days < self.min_tte_days:
+                deltas.append(np.nan)
+                gammas.append(np.nan)
+                thetas.append(np.nan)
+                vegas.append(np.nan)
+                rhos.append(np.nan)
+                ivs.append(np.nan)
                 continue
 
-            if tte_days < self.min_tte_days:
-                continue
-
+            spy_price = float(row["spy_close"])
+            strike = float(row["strike_price"])
             tte_years = tte_days / 365.0
+            ctype = row.get("contract_type", "")
             flag = "c" if ctype in ("call", "c") else "p"
-            opt_close = float(opt.get("close", 0))
+            opt_price = float(row.get("option_avg_price", 0))
 
             # Implied volatility
-            iv = self._calc_iv(opt_close, spy_price, strike, tte_years, flag)
+            iv = self._calc_iv(opt_price, spy_price, strike, tte_years, flag)
 
             # Greeks
             try:
@@ -427,10 +574,6 @@ class Consolidator:
             except Exception:
                 d = g = t = v = r = np.nan
 
-            tickers.append(ticker)
-            strikes.append(strike)
-            types.append(flag)
-            close_prices.append(opt_close)
             deltas.append(d)
             gammas.append(g)
             thetas.append(t)
@@ -438,17 +581,13 @@ class Consolidator:
             rhos.append(r)
             ivs.append(iv)
 
-        row["option_tickers"] = tickers
-        row["option_strikes"] = strikes
-        row["option_types"] = types
-        row["option_close_prices"] = close_prices
-        row["option_deltas"] = deltas
-        row["option_gammas"] = gammas
-        row["option_thetas"] = thetas
-        row["option_vegas"] = vegas
-        row["option_rhos"] = rhos
-        row["option_ivs"] = ivs
-        return row
+        df["delta"] = deltas
+        df["gamma"] = gammas
+        df["theta"] = thetas
+        df["vega"] = vegas
+        df["rho"] = rhos
+        df["implied_volatility"] = ivs
+        return df
 
     def _calc_iv(
         self, price: float, S: float, K: float, t: float, flag: str
@@ -463,53 +602,6 @@ class Consolidator:
             return iv
         except Exception:
             return self.fallback_iv
-
-    def _empty_greeks_lists(self) -> Dict[str, List]:
-        return {
-            "option_tickers": [],
-            "option_strikes": [],
-            "option_types": [],
-            "option_close_prices": [],
-            "option_deltas": [],
-            "option_gammas": [],
-            "option_thetas": [],
-            "option_vegas": [],
-            "option_rhos": [],
-            "option_ivs": [],
-        }
-
-    # ------------------------------------------------------------------
-    # News attachment
-    # ------------------------------------------------------------------
-
-    def _attach_news(self, df: pd.DataFrame, news_df: pd.DataFrame) -> pd.DataFrame:
-        """Attach the latest news sentiment at-or-before each timestamp."""
-        if news_df.empty:
-            df["news_sentiment"] = np.nan
-            df["news_sentiment_reasoning"] = None
-            df["news_article_id"] = None
-            df["news_timestamp"] = np.nan
-            return df
-
-        lookback_ms = self.news_lookback_hours * 3600 * 1000
-        news_cols = news_df[["timestamp", "sentiment", "sentiment_reasoning", "article_id"]].copy()
-        news_cols = news_cols.rename(
-            columns={
-                "sentiment": "news_sentiment",
-                "sentiment_reasoning": "news_sentiment_reasoning",
-                "article_id": "news_article_id",
-            }
-        )
-        news_cols["news_timestamp"] = news_cols["timestamp"]
-
-        merged = pd.merge_asof(
-            df.sort_values("timestamp"),
-            news_cols.sort_values("timestamp"),
-            on="timestamp",
-            direction="backward",
-            tolerance=lookback_ms,
-        )
-        return merged
 
     # ------------------------------------------------------------------
     # Output

@@ -464,11 +464,68 @@ def consolidate(config_dir, date):
         click.echo(f"Status:             {stats.get('status')}")
         if stats.get("status") == "success":
             click.echo(f"Total rows:         {stats.get('total_rows')}")
+            click.echo(f"Minutes:            {stats.get('minutes')}")
+            click.echo(f"Unique options:     {stats.get('unique_options')}")
             click.echo(f"Options contracts:  {stats.get('options_contracts_processed')}")
             click.echo(f"VIX available:      {stats.get('vix_available')}")
             click.echo(f"News available:     {stats.get('news_available')}")
         else:
             click.echo(f"Reason:             {stats.get('reason', 'unknown')}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("prepare-training")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--start-date",
+    required=True,
+    help="Start date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    required=True,
+    help="End date (YYYY-MM-DD).",
+)
+def prepare_training(config_dir, start_date, end_date):
+    """Prepare ML training data from consolidated historical files."""
+    try:
+        from datetime import datetime, timedelta
+
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.processing.training_data_prep import TrainingDataPrep
+
+        # Build date list
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+        dates = []
+        current = start
+        while current <= end:
+            dates.append(current.strftime("%Y-%m-%d"))
+            current += timedelta(days=1)
+
+        prep = TrainingDataPrep(config)
+        stats = prep.prepare(dates)
+
+        click.echo(f"\n--- Training Data Prep Summary ---")
+        click.echo(f"Dates processed:    {stats['dates_processed']}")
+        click.echo(f"Dates skipped:      {stats['dates_skipped']}")
+        click.echo(f"Total rows in:      {stats['total_rows_in']}")
+        click.echo(f"Total rows out:     {stats['total_rows_out']}")
+        click.echo(f"Rows filtered:      {stats['total_rows_filtered']}")
+        click.echo(f"Unique options:     {stats['unique_options']}")
+        click.echo(f"Prediction window:  {stats['prediction_window_minutes']} min")
+        click.echo(f"Min coverage:       {stats['min_target_coverage_pct']}%")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
