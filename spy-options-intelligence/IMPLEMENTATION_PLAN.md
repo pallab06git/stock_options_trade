@@ -183,11 +183,19 @@
 - [x] CLI: simulate command (--source, --date, --speed)
 - [x] Unit tests (24 tests — init, load, streaming, stop_event, delay cap, stubs, stats, source dirs)
 
-## Step 20: Integration Tests (Week 7)
-- [ ] tests/integration/test_historical_flow.py
-- [ ] tests/integration/test_realtime_flow.py
-- [ ] tests/integration/test_consolidation.py
-- [ ] Full pipeline tests
+## Step 20: Integration Tests ✅
+- [x] tests/integration/test_historical_flow.py (10 tests)
+  - TestSPYHistoricalFlow: multi-day backfill, checkpoint/resume, deduplication, invalid filtering (5)
+  - TestVIXHistoricalFlow: VIX backfill with validator (1)
+  - TestNewsHistoricalFlow: news backfill, article_id dedup within batch (2)
+  - TestParquetOutput: sorted timestamps, no duplicate timestamps (2)
+- [x] tests/integration/test_realtime_flow.py (9 tests)
+  - TestSimulatorStandalone: SPY/VIX/news replay, stop_event, timestamp ordering (5)
+  - TestSimulatorWithStreamingRunner: full pipeline, duplicate handling, invalid filtering, batch flushing (4)
+- [x] tests/integration/test_full_pipeline.py (5 tests)
+  - TestFullPipeline: end-to-end ingest+consolidate, idempotent consolidation (2)
+  - TestSchemaMonitorOnPipeline: baseline capture, no-drift, drift detection (3)
+- [x] All mock-based — no live API calls
 
 ## Step 21: Documentation (Week 8)
 - [ ] Update README.md with examples
@@ -204,4 +212,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 519 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
+**Total tests: 543 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
