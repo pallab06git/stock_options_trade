@@ -161,4 +161,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 340 passing (unit + integration) | Last updated: 2026-02-14**
+**Total tests: 340 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
