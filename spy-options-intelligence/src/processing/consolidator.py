@@ -517,6 +517,8 @@ class Consolidator:
         """Compute Black-Scholes Greeks as flat scalar columns per row.
 
         Rows without a ticker (SPY-only) or with missing data get NaN.
+        Uses vectorized filtering + df.apply instead of iterrows for
+        better performance on large DataFrames.
         """
         greek_cols = ["delta", "gamma", "theta", "vega", "rho", "implied_volatility"]
 
@@ -526,45 +528,38 @@ class Consolidator:
                 df[col] = np.nan
             return df
 
-        deltas = []
-        gammas = []
-        thetas = []
-        vegas = []
-        rhos = []
-        ivs = []
+        # Initialize all columns to NaN
+        for col in greek_cols:
+            df[col] = np.nan
 
-        for _, row in df.iterrows():
-            ticker = row.get("ticker")
-            if ticker is None or pd.isna(row.get("strike_price")) or pd.isna(row.get("spy_close")):
-                deltas.append(np.nan)
-                gammas.append(np.nan)
-                thetas.append(np.nan)
-                vegas.append(np.nan)
-                rhos.append(np.nan)
-                ivs.append(np.nan)
-                continue
+        if df.empty:
+            return df
 
-            tte_days = row.get("time_to_expiry_days", 0)
-            if pd.isna(tte_days) or tte_days < self.min_tte_days:
-                deltas.append(np.nan)
-                gammas.append(np.nan)
-                thetas.append(np.nan)
-                vegas.append(np.nan)
-                rhos.append(np.nan)
-                ivs.append(np.nan)
-                continue
+        # Build boolean mask for rows eligible for Greeks computation
+        has_ticker = df["ticker"].notna()
+        has_strike = df["strike_price"].notna() if "strike_price" in df.columns else pd.Series(False, index=df.index)
+        has_spy = df["spy_close"].notna() if "spy_close" in df.columns else pd.Series(False, index=df.index)
+        has_tte = (
+            df["time_to_expiry_days"].notna() & (df["time_to_expiry_days"] >= self.min_tte_days)
+            if "time_to_expiry_days" in df.columns
+            else pd.Series(False, index=df.index)
+        )
 
+        valid_mask = has_ticker & has_strike & has_spy & has_tte
+
+        if not valid_mask.any():
+            return df
+
+        def _greeks_for_row(row):
             spy_price = float(row["spy_close"])
             strike = float(row["strike_price"])
-            tte_years = tte_days / 365.0
+            tte_years = float(row["time_to_expiry_days"]) / 365.0
             ctype = row.get("contract_type", "")
             flag = "c" if ctype in ("call", "c") else "p"
-            opt_price = float(row.get("option_avg_price", 0))
+            opt_price = float(row.get("option_avg_price", 0) or 0)
 
-            # Implied volatility
             iv = self._calc_iv(opt_price, spy_price, strike, tte_years, flag)
 
-            # Greeks
             try:
                 d = bs_delta(flag, spy_price, strike, tte_years, self.risk_free_rate, iv)
                 g = bs_gamma(flag, spy_price, strike, tte_years, self.risk_free_rate, iv)
@@ -574,19 +569,15 @@ class Consolidator:
             except Exception:
                 d = g = t = v = r = np.nan
 
-            deltas.append(d)
-            gammas.append(g)
-            thetas.append(t)
-            vegas.append(v)
-            rhos.append(r)
-            ivs.append(iv)
+            return pd.Series({
+                "delta": d, "gamma": g, "theta": t,
+                "vega": v, "rho": r, "implied_volatility": iv,
+            })
 
-        df["delta"] = deltas
-        df["gamma"] = gammas
-        df["theta"] = thetas
-        df["vega"] = vegas
-        df["rho"] = rhos
-        df["implied_volatility"] = ivs
+        greeks = df.loc[valid_mask].apply(_greeks_for_row, axis=1)
+        for col in greek_cols:
+            df.loc[valid_mask, col] = greeks[col]
+
         return df
 
     def _calc_iv(

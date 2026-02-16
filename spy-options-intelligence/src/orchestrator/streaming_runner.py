@@ -62,7 +62,8 @@ class StreamingRunner:
         self.connection_manager = connection_manager or ConnectionManager(config)
         self.client = client or PolygonEquityClient(config, self.connection_manager, ticker=self.ticker)
         self.validator = validator or RecordValidator.for_equity(self.ticker)
-        self.deduplicator = deduplicator or Deduplicator(key_field="timestamp")
+        dedup_max = config.get("processing", {}).get("deduplication", {}).get("max_size", 100000)
+        self.deduplicator = deduplicator or Deduplicator(key_field="timestamp", max_size=dedup_max)
         self.sink = ParquetSink(config)
 
         # Market hours
@@ -75,7 +76,8 @@ class StreamingRunner:
         monitoring_cfg = streaming_cfg.get("monitoring", {})
         self.heartbeat = HeartbeatMonitor(monitoring_cfg, self.session_label)
         self.perf_monitor = PerformanceMonitor(config, session_label=self.session_label)
-        self.error_aggregator = ErrorAggregator(config, session_label=self.session_label)
+        max_err_types = config.get("monitoring", {}).get("performance", {}).get("max_error_types", 100)
+        self.error_aggregator = ErrorAggregator(config, session_label=self.session_label, max_error_types=max_err_types)
 
         # Streaming settings
         self.batch_size = config.get("streaming", {}).get("batch_size", 1000)

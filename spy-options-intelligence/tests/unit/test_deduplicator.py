@@ -105,6 +105,70 @@ class TestSeenCount:
         assert d.seen_count == 2
 
 
+class TestLRUEviction:
+
+    def test_evicts_oldest_when_max_size_exceeded(self):
+        """When max_size is reached, oldest entries are evicted."""
+        d = Deduplicator(max_size=3)
+        d.is_duplicate(_record(timestamp=100))
+        d.is_duplicate(_record(timestamp=200))
+        d.is_duplicate(_record(timestamp=300))
+        d.is_duplicate(_record(timestamp=400))  # evicts 100
+
+        assert d.seen_count == 3
+        assert d.eviction_count == 1
+        # 100 was evicted, so it's no longer a duplicate
+        assert d.is_duplicate(_record(timestamp=100)) is False
+
+    def test_max_size_none_allows_unlimited(self):
+        """max_size=None allows unlimited entries (backward compatible)."""
+        d = Deduplicator(max_size=None)
+        for i in range(500):
+            d.is_duplicate(_record(timestamp=i))
+        assert d.seen_count == 500
+        assert d.eviction_count == 0
+
+    def test_lru_order_preserved(self):
+        """Recently accessed keys survive eviction; oldest are evicted first."""
+        d = Deduplicator(max_size=3)
+        d.is_duplicate(_record(timestamp=100))
+        d.is_duplicate(_record(timestamp=200))
+        d.is_duplicate(_record(timestamp=300))
+
+        # Access 100 again (moves it to end as most recent)
+        d.is_duplicate(_record(timestamp=100))
+
+        # Insert 400 — should evict 200 (now the oldest)
+        d.is_duplicate(_record(timestamp=400))
+
+        assert d.seen_count == 3
+        # 200 should be evicted
+        assert d.is_duplicate(_record(timestamp=200)) is False
+        # 100 should still be there (was refreshed)
+        assert d.is_duplicate(_record(timestamp=100)) is True
+
+    def test_deduplicate_batch_respects_max_size(self):
+        """Batch deduplication also respects max_size limit."""
+        d = Deduplicator(max_size=3)
+        records = [_record(timestamp=i) for i in range(5)]
+        d.deduplicate_batch(records)
+
+        assert d.seen_count == 3
+        assert d.eviction_count == 2
+
+    def test_reset_clears_eviction_counter(self):
+        """reset() clears both seen keys and eviction counter."""
+        d = Deduplicator(max_size=2)
+        for i in range(5):
+            d.is_duplicate(_record(timestamp=i))
+
+        assert d.eviction_count == 3
+
+        d.reset()
+        assert d.seen_count == 0
+        assert d.eviction_count == 0
+
+
 class TestCustomKeyField:
 
     def test_dedup_by_custom_field(self):

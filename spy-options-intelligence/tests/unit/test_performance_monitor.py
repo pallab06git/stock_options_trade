@@ -853,3 +853,38 @@ class TestSessionLabel:
         path = monitor.dump_metrics()
 
         assert "metrics_tsla_" in path.name
+
+
+# ---------------------------------------------------------------------------
+# Test: Throughput Pruning
+# ---------------------------------------------------------------------------
+
+class TestThroughputPruning:
+    """Tests for _prune_throughput memory management."""
+
+    def test_old_entries_pruned(self):
+        """Entries older than 1 hour are pruned from _throughput."""
+        monitor = _make_monitor()
+
+        now = time.time()
+        # Add entries: some old (2 hours ago), some recent
+        for i in range(50):
+            monitor._throughput["write"].append((now - 7200 + i, 100))
+        for i in range(10):
+            monitor._throughput["write"].append((now - 5 + i, 100))
+
+        monitor._prune_throughput("write")
+
+        # Only the recent entries should remain
+        assert len(monitor._throughput["write"]) == 10
+
+    def test_at_least_one_entry_kept(self):
+        """Even when all entries are old, at least one is kept."""
+        monitor = _make_monitor()
+
+        old = time.time() - 7200  # 2 hours ago
+        monitor._throughput["write"].append((old, 500))
+
+        monitor._prune_throughput("write")
+
+        assert len(monitor._throughput["write"]) == 1

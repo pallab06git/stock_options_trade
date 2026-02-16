@@ -910,5 +910,81 @@ def health(ticker, as_json):
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# Purge command
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--category",
+    default=None,
+    help="Purge a single category (raw_data, processed_data, performance_metrics, "
+         "schema_drift, checkpoints, heartbeat). Omit to purge all.",
+)
+@click.option(
+    "--retention-days",
+    default=None,
+    type=int,
+    help="Override retention days for this run.",
+)
+@click.option(
+    "--dry-run/--no-dry-run",
+    default=True,
+    help="Preview deletions without removing files (default: --dry-run).",
+)
+def purge(config_dir, category, retention_days, dry_run):
+    """Purge old data files based on retention policy."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.utils.purge_manager import PurgeManager
+
+        pm = PurgeManager(config)
+
+        if category:
+            result = pm.purge_category(
+                category,
+                retention_days_override=retention_days,
+                dry_run=dry_run,
+            )
+            click.echo(f"\n--- Purge Summary ({category}) ---")
+            click.echo(f"Mode:           {'DRY RUN' if dry_run else 'LIVE'}")
+            click.echo(f"Retention:      {result['retention_days']} days")
+            click.echo(f"Files scanned:  {result['files_scanned']}")
+            click.echo(f"Files purged:   {result['files_purged']}")
+            click.echo(f"Bytes freed:    {result['bytes_freed']}")
+            click.echo(f"Files failed:   {result['files_failed']}")
+        else:
+            result = pm.purge_all(dry_run=dry_run)
+            click.echo(f"\n--- Purge Summary (all categories) ---")
+            click.echo(f"Mode:           {'DRY RUN' if dry_run else 'LIVE'}")
+            click.echo(f"Files scanned:  {result['files_scanned']}")
+            click.echo(f"Files purged:   {result['files_purged']}")
+            click.echo(f"Bytes freed:    {result['bytes_freed']}")
+            click.echo(f"Files failed:   {result['files_failed']}")
+            click.echo("")
+            for cat, cat_result in result["categories"].items():
+                if cat_result.get("skipped"):
+                    click.echo(f"  {cat:<22} (disabled)")
+                else:
+                    click.echo(
+                        f"  {cat:<22} {cat_result['files_purged']:>4} purged "
+                        f"/ {cat_result['files_scanned']:>4} scanned "
+                        f"({cat_result['retention_days']}d retention)"
+                    )
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     cli()

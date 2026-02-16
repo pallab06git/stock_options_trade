@@ -204,6 +204,24 @@
 - [x] Create config/examples/ — 3 annotated YAML configs (backfill_only, full_pipeline, streaming)
 - [x] Full test suite verification (543 passed, 7 skipped)
 
+## Step 22: Data Purge Manager + Memory Leak Fixes ✅
+- [x] Add retention + processing config sections to settings.yaml
+- [x] Add max_error_types to monitoring.performance config
+- [x] Create src/utils/purge_manager.py (PurgeManager class)
+  - Per-category retention (raw_data, processed_data, performance_metrics, schema_drift, checkpoints, heartbeat)
+  - Category-to-path mapping with file pattern filters (e.g. checkpoint_*.json)
+  - Dry-run mode, graceful error handling, summary reporting
+- [x] Add purge CLI command (--category, --retention-days, --dry-run/--no-dry-run)
+- [x] Export PurgeManager from src/utils/__init__.py
+- [x] Fix Deduplicator unbounded _seen set → OrderedDict with LRU eviction (max_size param)
+- [x] Update streaming runners to read max_size from config["processing"]["deduplication"]["max_size"]
+- [x] Fix PerformanceMonitor unbounded _throughput → _prune_throughput() (1-hour window)
+- [x] Fix ErrorAggregator unbounded error types → OrderedDict with max_error_types LRU eviction
+- [x] Update streaming runners to pass max_error_types from config
+- [x] Vectorize Consolidator _compute_greeks_flat (iterrows → df.apply with boolean mask)
+- [x] Unit tests: 12 purge + 5 dedup LRU + 2 perf pruning + 2 error LRU = 21 new tests
+- [x] Full test suite verification (564 passed, 7 skipped)
+
 ## Future (Phase 2 - ML)
 - [ ] Feature engineering pipeline
 - [ ] LSTM model training
@@ -212,4 +230,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 543 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-14**
+**Total tests: 564 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-15**

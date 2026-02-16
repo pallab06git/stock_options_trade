@@ -25,6 +25,7 @@ monitoring:
     error_rate_percent: 1.0               # Alert if error rate exceeds 1%
     error_window_minutes: 15              # Sliding window for error rate
     heartbeat_check_interval_seconds: 60  # How often to check heartbeat staleness
+    max_error_types: 100                   # Cap distinct error types for memory safety
     metrics_dump_interval_minutes: 15     # How often to write metrics JSON
     latency_window_size: 100              # Rolling window for p50/p95/p99
 
@@ -73,6 +74,19 @@ consolidation:
 simulator:
   speed_multiplier: 1.0       # 1.0 = real-time, 10.0 = 10x, 0 = no delay
   max_delay_per_gap_sec: 5.0  # Cap per-record delay to avoid hanging
+
+retention:
+  raw_data: 3
+  processed_data: 3
+  performance_metrics: 3
+  schema_drift: 7
+  checkpoints: 7
+  heartbeat: 1
+  auto_purge: false
+
+processing:
+  deduplication:
+    max_size: 100000
 
 signal_validation:
   prediction_window_minutes: 120

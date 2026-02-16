@@ -544,3 +544,37 @@ class TestSessionLabel:
 
         summary = agg.get_error_summary()
         assert summary["session_label"] == "tsla"
+
+
+# ---------------------------------------------------------------------------
+# Test: Error Type LRU Eviction
+# ---------------------------------------------------------------------------
+
+class TestErrorTypeLRU:
+    """Tests for max_error_types LRU eviction."""
+
+    def test_evicts_oldest_error_type_when_exceeded(self):
+        """When max_error_types is reached, the oldest type is evicted."""
+        agg = ErrorAggregator(_make_config(), max_error_types=3)
+
+        agg.record_error("type_a", "msg_a")
+        agg.record_error("type_b", "msg_b")
+        agg.record_error("type_c", "msg_c")
+        agg.record_error("type_d", "msg_d")  # should evict type_a
+
+        assert len(agg._error_counts) == 3
+        assert "type_a" not in agg._error_counts
+        assert "type_d" in agg._error_counts
+        assert agg._evicted_types == 1
+
+    def test_both_dicts_cleaned_on_eviction(self):
+        """Eviction removes the type from both _error_counts and _recent_errors."""
+        agg = ErrorAggregator(_make_config(), max_error_types=2)
+
+        agg.record_error("type_x", "msg_x")
+        agg.record_error("type_y", "msg_y")
+        agg.record_error("type_z", "msg_z")  # evicts type_x
+
+        assert "type_x" not in agg._error_counts
+        assert "type_x" not in agg._recent_errors
+        assert len(agg._recent_errors) == 2

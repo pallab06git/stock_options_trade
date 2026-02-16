@@ -109,6 +109,7 @@ class PerformanceMonitor:
         elapsed = time.monotonic() - start
         self._latencies[operation].append(elapsed)
         self._throughput[operation].append((time.time(), record_count))
+        self._prune_throughput(operation)
         self.total_records_processed += record_count
         self.total_operations += 1
 
@@ -235,6 +236,28 @@ class PerformanceMonitor:
     # Throughput
     # ------------------------------------------------------------------
 
+    def _prune_throughput(self, operation: str, window_seconds: float = 3600.0) -> None:
+        """Remove throughput entries older than *window_seconds*.
+
+        Always keeps at least one entry per operation so that
+        ``get_throughput`` can still return a meaningful value.
+        """
+        entries = self._throughput.get(operation)
+        if not entries or len(entries) <= 1:
+            return
+        cutoff = time.time() - window_seconds
+        # Find the first index that is within the window
+        first_valid = 0
+        for i, (ts, _) in enumerate(entries):
+            if ts >= cutoff:
+                first_valid = i
+                break
+        else:
+            # All entries are old — keep the last one
+            first_valid = len(entries) - 1
+        if first_valid > 0:
+            del entries[:first_valid]
+
     def get_throughput(self, operation: str, window_seconds: float = 60.0) -> float:
         """Average throughput (records/second) over a recent time window.
 
@@ -245,6 +268,7 @@ class PerformanceMonitor:
         Returns:
             Records per second (0.0 if no data in window).
         """
+        self._prune_throughput(operation)
         entries = self._throughput.get(operation, [])
         if not entries:
             return 0.0

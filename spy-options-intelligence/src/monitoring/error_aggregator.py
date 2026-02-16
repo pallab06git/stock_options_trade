@@ -9,7 +9,7 @@ sliding window, and generates summary reports for operational analysis.
 """
 
 import time
-from collections import defaultdict, deque
+from collections import OrderedDict, deque
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.utils.logger import get_logger
@@ -33,12 +33,20 @@ class ErrorAggregator:
             logger.warning("Error rate threshold exceeded!")
     """
 
-    def __init__(self, config: Dict[str, Any], session_label: str = "default"):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        session_label: str = "default",
+        max_error_types: Optional[int] = None,
+    ):
         """
         Args:
             config: Full merged configuration dict.  Reads thresholds from
                     ``config["monitoring"]["performance"]``.
             session_label: Label for this monitoring session (e.g. ticker name).
+            max_error_types: Override for the max distinct error types to track.
+                             Defaults to ``config["monitoring"]["performance"]["max_error_types"]``
+                             or 100.
         """
         self.session_label = session_label
         perf = config.get("monitoring", {}).get("performance", {})
@@ -46,17 +54,22 @@ class ErrorAggregator:
         # Configurable thresholds
         self.error_rate_threshold = perf.get("error_rate_percent", 1.0)
         self.error_window_seconds = perf.get("error_window_minutes", 15) * 60
+        self.max_error_types = (
+            max_error_types if max_error_types is not None
+            else perf.get("max_error_types", 100)
+        )
 
         # Sliding window: deque of (timestamp, is_error) tuples
         self._events: deque = deque()
 
-        # Cumulative error counts by type
-        self._error_counts: Dict[str, int] = defaultdict(int)
+        # Cumulative error counts by type (OrderedDict for LRU eviction)
+        self._error_counts: OrderedDict = OrderedDict()
 
         # Recent error messages for reporting (keep last N per type)
-        self._recent_errors: Dict[str, deque] = defaultdict(
-            lambda: deque(maxlen=50)
-        )
+        self._recent_errors: OrderedDict = OrderedDict()
+
+        # Eviction tracking
+        self._evicted_types = 0
 
         # Cumulative totals
         self.total_errors = 0
@@ -75,8 +88,18 @@ class ErrorAggregator:
         """
         now = time.time()
         self._events.append((now, True))
+
+        # Initialize if new type
+        if error_type not in self._error_counts:
+            self._error_counts[error_type] = 0
+            self._recent_errors[error_type] = deque(maxlen=50)
+            self._evict_error_types_if_needed()
+
         self._error_counts[error_type] += 1
+        # Move to end (most recently used)
+        self._error_counts.move_to_end(error_type)
         self._recent_errors[error_type].append((now, error_msg))
+        self._recent_errors.move_to_end(error_type)
         self.total_errors += 1
 
     def record_success(self) -> None:
@@ -172,3 +195,10 @@ class ErrorAggregator:
         cutoff = time.time() - window_seconds
         while self._events and self._events[0][0] < cutoff:
             self._events.popleft()
+
+    def _evict_error_types_if_needed(self) -> None:
+        """Remove oldest error types if over max_error_types."""
+        while len(self._error_counts) > self.max_error_types:
+            oldest_type, _ = self._error_counts.popitem(last=False)
+            self._recent_errors.pop(oldest_type, None)
+            self._evicted_types += 1
