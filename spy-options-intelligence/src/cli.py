@@ -986,5 +986,309 @@ def purge(config_dir, category, retention_days, dry_run):
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# Pipeline v2 commands
+# ---------------------------------------------------------------------------
+
+
+@cli.command("download-minute")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--ticker",
+    default="SPY",
+    help="Ticker to download (e.g. SPY, I:VIX).",
+)
+@click.option(
+    "--start-date",
+    required=True,
+    help="Start date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    required=True,
+    help="End date (YYYY-MM-DD).",
+)
+@click.option(
+    "--resume/--no-resume",
+    default=True,
+    help="Skip dates where output file already exists (default: --resume).",
+)
+def download_minute(config_dir, ticker, start_date, end_date, resume):
+    """Download minute-level OHLCV bars for an equity or index ticker."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.data_sources.minute_downloader import MinuteDownloader
+        from src.utils.connection_manager import ConnectionManager
+        from src.utils.hardware_monitor import HardwareMonitor
+
+        cm = ConnectionManager(config)
+        monitor = HardwareMonitor(config)
+        monitor.start("download-minute")
+
+        try:
+            dl = MinuteDownloader(config, cm)
+            stats = dl.download(ticker, start_date, end_date, resume=resume)
+        finally:
+            monitor.stop()
+
+        click.echo(f"\n--- Download Minute Summary ({ticker}) ---")
+        click.echo(f"Date range:       {start_date} → {end_date}")
+        click.echo(f"Dates downloaded: {stats['dates_downloaded']}")
+        click.echo(f"Dates skipped:    {stats['dates_skipped']}")
+        click.echo(f"Total bars:       {stats['total_bars']}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("download-options-targeted")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--start-date",
+    required=True,
+    help="Start date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    required=True,
+    help="End date (YYYY-MM-DD).",
+)
+@click.option(
+    "--resume/--no-resume",
+    default=True,
+    help="Skip dates/contracts where output file already exists (default: --resume).",
+)
+def download_options_targeted(config_dir, start_date, end_date, resume):
+    """Download targeted options (2 calls + 2 puts per day) and their minute bars."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.data_sources.targeted_options_downloader import TargetedOptionsDownloader
+        from src.utils.connection_manager import ConnectionManager
+        from src.utils.hardware_monitor import HardwareMonitor
+
+        cm = ConnectionManager(config)
+        monitor = HardwareMonitor(config)
+        monitor.start("download-options-targeted")
+
+        try:
+            dl = TargetedOptionsDownloader(config, cm)
+            stats = dl.run(start_date, end_date, resume=resume)
+        finally:
+            monitor.stop()
+
+        click.echo(f"\n--- Targeted Options Download Summary ---")
+        click.echo(f"Date range:        {start_date} → {end_date}")
+        click.echo(f"Dates processed:   {stats['dates_processed']}")
+        click.echo(f"Dates skipped:     {stats['dates_skipped']}")
+        click.echo(f"Contracts found:   {stats['contracts_found']}")
+        click.echo(f"Total bars:        {stats['total_bars']}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("engineer-features")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--start-date",
+    required=True,
+    help="Start date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    required=True,
+    help="End date (YYYY-MM-DD).",
+)
+@click.option(
+    "--source",
+    default="all",
+    type=click.Choice(["spy", "vix", "options", "all"]),
+    help="Which source to engineer features for (default: all).",
+)
+def engineer_features(config_dir, start_date, end_date, source):
+    """Compute lagged % change features for minute-level data."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.processing.feature_engineer import FeatureEngineer
+        from src.utils.hardware_monitor import HardwareMonitor
+
+        monitor = HardwareMonitor(config)
+        monitor.start("engineer-features")
+
+        try:
+            fe = FeatureEngineer(config)
+            stats = fe.run(start_date, end_date, source=source)
+        finally:
+            monitor.stop()
+
+        click.echo(f"\n--- Feature Engineering Summary ---")
+        click.echo(f"Date range:       {start_date} → {end_date}")
+        click.echo(f"Source:           {source}")
+        click.echo(f"Dates processed:  {stats['dates_processed']}")
+        click.echo(f"Equity files:     {stats['equity_files']}")
+        click.echo(f"Options files:    {stats['options_files']}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("scan-options")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--start-date",
+    required=True,
+    help="Start date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    required=True,
+    help="End date (YYYY-MM-DD).",
+)
+def scan_options(config_dir, start_date, end_date):
+    """Scan processed options features for 20%+ intraday moves."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.processing.options_scanner import OptionsScanner
+
+        scanner = OptionsScanner(config)
+        events = scanner.scan(start_date, end_date)
+        path = scanner.generate_report(events, start_date, end_date)
+
+        click.echo(f"\nReport saved to: {path}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("report-space")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+def report_space(config_dir):
+    """Generate storage space utilization report."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.utils.space_reporter import SpaceReporter
+
+        reporter = SpaceReporter(config)
+        path = reporter.generate_report()
+
+        click.echo(f"\nSpace report saved to: {path}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("report-hardware")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--date",
+    default=None,
+    help="Date to summarize (YYYY-MM-DD). Defaults to today.",
+)
+def report_hardware(config_dir, date):
+    """Show hardware usage summary for a given date."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.utils.hardware_monitor import HardwareMonitor
+
+        monitor = HardwareMonitor(config)
+        df = monitor.daily_summary(date)
+
+        if df.empty:
+            click.echo(f"No hardware metrics found for {date or 'today'}.")
+            return
+
+        click.echo(f"\n--- Hardware Usage Summary ({date or 'today'}) ---")
+        click.echo(df.to_string(index=False))
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("dashboard")
+@click.option(
+    "--port",
+    default=8501,
+    type=int,
+    help="Port for the Streamlit dashboard (default: 8501).",
+)
+def dashboard(port):
+    """Launch the Streamlit analytics dashboard."""
+    import subprocess
+
+    dashboard_path = Path(__file__).parent / "reporting" / "dashboard.py"
+    if not dashboard_path.exists():
+        click.echo(f"Dashboard not found: {dashboard_path}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Starting dashboard on http://localhost:{port} ...")
+    try:
+        subprocess.run(
+            ["streamlit", "run", str(dashboard_path), "--server.port", str(port)],
+            check=True,
+        )
+    except KeyboardInterrupt:
+        click.echo("\nDashboard stopped.")
+    except FileNotFoundError:
+        click.echo(
+            "streamlit not found. Install with: pip install streamlit>=1.30.0",
+            err=True,
+        )
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     cli()

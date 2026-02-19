@@ -1,0 +1,33 @@
+# Pipeline v2 configuration — minute-level feature engineering & analysis
+# Used by: MinuteDownloader, TargetedOptionsDownloader, FeatureEngineer,
+#           OptionsScanner, SpaceReporter, HardwareMonitor, dashboard
+
+pipeline_v2:
+  date_range:
+    start_date: "2025-03-01"
+    end_date: "2025-03-31"
+
+  feature_engineering:
+    lag_windows: [1, 5, 10, 15]   # minutes
+    market_open_et: "09:30"
+
+  options:
+    n_calls: 2                     # calls with strike immediately > opening
+    n_puts: 2                      # puts with strike immediately < opening
+    discovery_range_pct: 0.05      # ±5% range to query Polygon, then filter to n_calls/n_puts
+    expiration_search_days: 5      # look for expiry within next 5 calendar days
+
+  scanner:
+    reference_window_minutes: 120  # rolling lookback to find reference price
+    trigger_threshold_pct: 20.0    # 20%+ move triggers an event
+    sustained_threshold_pct: 10.0  # 10%+ sustained move duration tracked
+
+  reporting:
+    reports_dir: "data/reports"
+
+  hardware:
+    enabled: true
+    output_dir: "data/reports/hardware"
+
+  risk_free_rate: 0.045
+  dividend_yield: 0.015

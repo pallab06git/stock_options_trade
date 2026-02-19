@@ -60,3 +60,4 @@ scipy>=1.11.0                  # Numerical methods (required by py_vollib)
 python-dateutil>=2.8.2
 pytz>=2023.3
 psutil>=5.9.0                  # Process monitoring
+streamlit>=1.30.0              # Interactive dashboard UI

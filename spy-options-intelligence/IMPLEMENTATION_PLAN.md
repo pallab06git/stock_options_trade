@@ -222,12 +222,27 @@
 - [x] Unit tests: 12 purge + 5 dedup LRU + 2 perf pruning + 2 error LRU = 21 new tests
 - [x] Full test suite verification (564 passed, 7 skipped)
 
-## Future (Phase 2 - ML)
-- [ ] Feature engineering pipeline
+## Step 23: Feature Engineering & Analysis Rebuild ✅
+- [x] Add `streamlit>=1.30.0` to requirements.txt
+- [x] Create `config/pipeline_v2.yaml` (date range, lag windows, options targeting, scanner, reporting config)
+- [x] Create `src/data_sources/minute_downloader.py` (MinuteDownloader — SPY + VIX bulk month download)
+- [x] Create `src/data_sources/targeted_options_downloader.py` (TargetedOptionsDownloader — 2 calls + 2 puts per day)
+- [x] Create `src/processing/feature_engineer.py` (FeatureEngineer — lagged % change + IV features)
+- [x] Create `src/processing/options_scanner.py` (OptionsScanner — 20%+ move detector with event CSV)
+- [x] Create `src/utils/space_reporter.py` (SpaceReporter — storage size tree + compression estimates)
+- [x] Create `src/utils/hardware_monitor.py` (HardwareMonitor — CPU/memory/disk tracking + decorator)
+- [x] Create `src/reporting/__init__.py` + `src/reporting/dashboard.py` (3-tab Streamlit dashboard)
+- [x] Add 7 new CLI commands to `src/cli.py`:
+      download-minute, download-options-targeted, engineer-features,
+      scan-options, report-space, report-hardware, dashboard
+- [x] Unit tests: 68 new tests across 6 files
+- [x] Full test suite: 632 passing + 7 skipped (live market hours tests)
+
+## Future
 - [ ] LSTM model training
 - [ ] Signal validator implementation
 - [ ] MLflow integration
 - [ ] Backtesting framework
 
 ---
-**Total tests: 564 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-15**
+**Total tests: 632 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-18**
