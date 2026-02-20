@@ -19,7 +19,7 @@ Complete reference of every module in the platform, what it does, and how module
 
 | Module | Description |
 |--------|-------------|
-| `src/cli.py` | Click-based CLI with 16 commands. The only user-facing entry point — all execution flows start here. |
+| `src/cli.py` | Click-based CLI with 24 commands. The only user-facing entry point — all execution flows start here. |
 
 ### Data Sources (`src/data_sources/`)
 
@@ -30,6 +30,8 @@ Complete reference of every module in the platform, what it does, and how module
 | `polygon_options_client.py` | `PolygonOptionsClient` | Discovers options contracts within ±1% of SPY opening price via `list_options_contracts()`, persists them as JSON, and streams real-time options aggregates via WebSocket (`Market.Options`). |
 | `polygon_vix_client.py` | `PolygonVIXClient` | Fetches VIX index (`I:VIX`) aggregates — historical via REST `get_aggs()` and real-time via WebSocket (`Market.Indices`). |
 | `news_client.py` | `PolygonNewsClient` | Fetches news articles via REST `list_ticker_news()` for historical, and polls at a configurable interval for "real-time". Extracts ticker-matched sentiment from Polygon insights. |
+| `minute_downloader.py` | `MinuteDownloader` | Bulk downloads SPY (and optionally VIX) per-minute bars for a full calendar month via Polygon REST. Stores date-partitioned Parquet files in `data/raw/`. Used by the `download-minute` CLI command. |
+| `targeted_options_downloader.py` | `TargetedOptionsDownloader` | Downloads a small, targeted set of options per day (2 calls + 2 puts nearest ATM) to stay within free-tier API limits. Resilient `run()` skips dates with no data. Used by the `download-options-targeted` CLI command. |
 
 ### Sinks (`src/sinks/`)
 
@@ -58,6 +60,8 @@ Complete reference of every module in the platform, what it does, and how module
 | `deduplicator.py` | `Deduplicator` | Tracks seen keys in an in-memory set to filter duplicate records. Configurable key field (`timestamp` for equity/VIX, `article_id` for news). |
 | `consolidator.py` | `Consolidator` | The heaviest processing module. Loads SPY, VIX, Options, and News Parquet files for a date, aggregates to 1-minute bars, aligns VIX via `merge_asof`, computes technical indicators (RSI, MACD, Bollinger Bands), momentum (ROC), attaches news sentiment, flattens to per-option-per-minute rows, and computes Black-Scholes Greeks. |
 | `training_data_prep.py` | `TrainingDataPrep` | Reads consolidated Parquet files, adds forward-looking target future prices (120-min lookahead), filters by minimum coverage, and writes to `data/processed/training/`. |
+| `feature_engineer.py` | `FeatureEngineer` | Computes lagged percentage-change features and implied-volatility features from SPY minute bars. Reads from `data/raw/spy/` and writes enriched Parquet to `data/processed/features/`. |
+| `options_scanner.py` | `OptionsScanner` | Scans consolidated options data for significant moves (≥20%). Emits a summary CSV of events with timestamps and move magnitudes for downstream analysis. |
 
 ### Monitoring (`src/monitoring/`)
 
@@ -75,9 +79,18 @@ Complete reference of every module in the platform, what it does, and how module
 |--------|----------------|-------------|
 | `config_loader.py` | `ConfigLoader` | Loads `.env`, parses 4 YAML files (`settings.yaml`, `sources.yaml`, `sinks.yaml`, `retry_policy.yaml`), substitutes `${ENV_VARS}`, merges into a single config dict. |
 | `logger.py` | `setup_logger()`, `get_logger()`, `redact_sensitive()` | Configures loguru with console + file handlers. Automatically redacts API keys, passwords, and connection strings in all log output. |
-| `retry_handler.py` | `RetryHandler` | Wraps API calls with configurable exponential backoff + jitter. Profiles loaded from `retry_policy.yaml` (default: 3 attempts, polygon: 5 attempts). |
+| `retry_handler.py` | `with_retry`, `RetryableError`, `SkippableError` | Decorator factory for configurable retry logic. 5xx and 429 errors use exponential backoff (`initial_wait * base^attempt`, capped at `max_wait`). Auth failures (401/403) log a WARNING and return `None` immediately — never retried to prevent account lockout. `SkippableError` (data quality / schema drift) also logs and returns `None` without retry. Profiles loaded from `retry_policy.yaml`. |
 | `connection_manager.py` | `ConnectionManager` | Manages Polygon SDK clients (REST + WebSocket). Implements unified token-bucket rate limiting across all sources. Handles 429 responses by pausing the bucket. |
 | `market_hours.py` | `MarketHours` | Checks if NYSE is open (Mon–Fri, 9:30 AM–4:00 PM ET). Accounts for holidays via Polygon market calendar API. Used by streaming runners to start/stop streams. |
+| `purge_manager.py` | `PurgeManager` | Deletes old files per configurable per-category retention policy (raw data, processed data, checkpoints, logs, heartbeat). Supports dry-run mode. Used by the `purge` CLI command. |
+| `space_reporter.py` | `SpaceReporter` | Walks the `data/` directory tree and reports storage size per category with compression estimates. Used by the `report-space` CLI command. |
+| `hardware_monitor.py` | `HardwareMonitor` | Tracks CPU, memory, and disk usage via psutil. Provides a decorator to profile function-level resource consumption. Used by the `report-hardware` CLI command. |
+
+### Reporting (`src/reporting/`)
+
+| Module | Class | Description |
+|--------|-------|-------------|
+| `dashboard.py` | `Dashboard` | 3-tab Streamlit dashboard: (1) SPY feature overview, (2) options scanner results, (3) hardware/storage metrics. Launched via the `dashboard` CLI command (`streamlit run`). |
 
 ---
 
@@ -462,7 +475,7 @@ Shows which modules depend on which. Arrows mean "uses / imports from".
     │               Utilities                       │◄┘
     │                                              │
     │  ConnectionManager ← rate limiting, SDK mgmt │
-    │  RetryHandler      ← exponential backoff     │
+    │  RetryHandler      ← exp backoff, auth skip  │
     │  MarketHours       ← NYSE calendar           │
     │  ConfigLoader      ← YAML + .env             │
     │  Logger            ← loguru + redaction       │
