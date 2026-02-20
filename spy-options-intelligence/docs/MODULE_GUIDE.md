@@ -19,7 +19,7 @@ Complete reference of every module in the platform, what it does, and how module
 
 | Module | Description |
 |--------|-------------|
-| `src/cli.py` | Click-based CLI with 24 commands. The only user-facing entry point — all execution flows start here. |
+| `src/cli.py` | Click-based CLI with 25 commands. The only user-facing entry point — all execution flows start here. |
 
 ### Data Sources (`src/data_sources/`)
 
@@ -32,6 +32,9 @@ Complete reference of every module in the platform, what it does, and how module
 | `news_client.py` | `PolygonNewsClient` | Fetches news articles via REST `list_ticker_news()` for historical, and polls at a configurable interval for "real-time". Extracts ticker-matched sentiment from Polygon insights. |
 | `minute_downloader.py` | `MinuteDownloader` | Bulk downloads SPY (and optionally VIX) per-minute bars for a full calendar month via Polygon REST. Stores date-partitioned Parquet files in `data/raw/`. Used by the `download-minute` CLI command. |
 | `targeted_options_downloader.py` | `TargetedOptionsDownloader` | Downloads a small, targeted set of options per day (2 calls + 2 puts nearest ATM) to stay within free-tier API limits. Resilient `run()` skips dates with no data. Used by the `download-options-targeted` CLI command. |
+| `options_ticker_builder.py` | `OptionsTickerBuilder` | Pure math helper — all `@staticmethod`, no config/API/I/O. Builds `O:SPY250304C00601000`-style ticker strings, computes nearest ATM call/put strikes, and resolves next trading day / next Friday. Used by `ContractSelector` in TEST mode. |
+| `contract_selector.py` | `ContractSelector` | Handshake module between contract discovery and bar download. **TEST mode**: prompts user once per cycle (underlying, increment, n_calls, n_puts, expiry convention) and constructs tickers mathematically via `OptionsTickerBuilder`. **PROD mode**: calls `massive.list_options_contracts()` and filters to nearest n calls + n puts. Returns a uniform `{ticker, strike, contract_type, expiry_date, underlying}` list regardless of mode. |
+| `massive_options_downloader.py` | `MassiveOptionsDownloader` | Generic parallel options bar downloader via `massive.RESTClient.list_aggs()`. Contains zero ticker-construction logic — receives contract list from `ContractSelector`. Downloads contracts in parallel via `ThreadPoolExecutor`, writes Parquet to `data/raw/options/minute/{safe_ticker}/{date}.parquet`. Used by the `download-massive-options` CLI command. |
 
 ### Sinks (`src/sinks/`)
 
@@ -364,7 +367,40 @@ cli.py → simulate()
         └── yield record
 ```
 
-### 13. `schema-check` — Schema Drift Detection
+### 13. `download-massive-options` — Massive.com Options Bar Download
+
+```
+cli.py → download_massive_options()
+├── ConfigLoader.load()
+├── setup_logger()
+├── ContractSelector(config, mode, api_key)   ← TEST or PROD mode
+├── MassiveOptionsDownloader.from_config(config, selector)
+│   └── resolves api_key: MASSIVE_API_KEY → massive.api_key → POLYGON_API_KEY → polygon.api_key
+└── HardwareMonitor.start("download-massive-options")
+
+    downloader.run(start_date, end_date, resume):
+    ├── IF selector.needs_prompt:
+    │   └── selector.prompt_once()  ← interactive: asks underlying, increment, n_calls, n_puts, expiry
+    │       (asked ONCE; params reused for every date in the cycle)
+    └── FOR each date in range:
+        ├── get_opening_price(date)
+        │   └── pd.read_parquet(data/raw/{underlying}/{date}.parquet) → first bar → open
+        ├── selector.get_contracts(date, opening_price)
+        │   ├── [TEST] OptionsTickerBuilder.compute_strikes()  → n calls + n puts
+        │   │          OptionsTickerBuilder.build_ticker()     → O:SPY... ticker string
+        │   │          ContractSelector._resolve_expiry()      → expiry date per convention
+        │   └── [PROD] massive.list_options_contracts()        → filtered by nearest strikes
+        └── download_tickers(contracts, date, resume)
+            └── ThreadPoolExecutor(max_workers)
+                └── FOR each contract in parallel:
+                    └── _download_single(contract, date, resume)
+                        ├── skip if Parquet already exists (resume=True)
+                        ├── _fetch_bars(ticker, date)
+                        │   └── massive.RESTClient.list_aggs(ticker, 1, "minute", date, date)
+                        └── write → data/raw/options/minute/{safe_ticker}/{date}.parquet
+```
+
+### 15. `schema-check` — Schema Drift Detection
 
 ```
 cli.py → schema_check()
@@ -382,7 +418,7 @@ cli.py → schema_check()
     └── if auto_update_baseline: save_baseline()
 ```
 
-### 14. `schema-baseline` — Capture Schema Baseline
+### 16. `schema-baseline` — Capture Schema Baseline
 
 ```
 cli.py → schema_baseline()
@@ -397,7 +433,7 @@ cli.py → schema_baseline()
     └── writes data/logs/schema/{source}_baseline.json
 ```
 
-### 15. `workers list` / `workers stop` — Process Management
+### 17. `workers list` / `workers stop` — Process Management
 
 ```
 cli.py → workers list/stop
@@ -412,7 +448,7 @@ cli.py → workers list/stop
     └── os.kill(pid, SIGTERM)
 ```
 
-### 16. `health` — Health Dashboard
+### 18. `health` — Health Dashboard
 
 ```
 cli.py → health()
@@ -512,6 +548,12 @@ Polygon REST API ──► PolygonEquityClient ──► HistoricalRunner ──
 Polygon REST API ──► PolygonVIXClient    ──► HistoricalRunner ──► ParquetSink
 Polygon REST API ──► PolygonNewsClient   ──► HistoricalRunner ──► ParquetSink
 Polygon REST API ──► PolygonOptionsClient ──► save_contracts() ──► JSON file
+
+ContractSelector (TEST) ──► OptionsTickerBuilder ─────────────────────────────┐
+ContractSelector (PROD) ──► massive.list_options_contracts() ─────────────────┤
+                                                                               ▼
+Massive REST API ──► MassiveOptionsDownloader ──► ThreadPoolExecutor ──► ParquetSink
+                      (list_aggs per contract)       (parallel workers)   data/raw/options/minute/
 
 Polygon WebSocket ──► PolygonEquityClient ──► StreamingRunner ──────────► ParquetSink
 Polygon WebSocket ──► PolygonVIXClient    ──► StreamingRunner ──────────► ParquetSink

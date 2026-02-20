@@ -220,6 +220,120 @@ stats = dl.run("2025-03-01", "2025-03-31")
 
 ---
 
+### OptionsTickerBuilder
+
+**Module**: `src.data_sources.options_ticker_builder`
+
+Pure math helper for constructing options tickers and computing ATM strikes. All methods are `@staticmethod` — no config, no API calls, no I/O.
+
+```python
+OptionsTickerBuilder  # no constructor — use static methods directly
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `build_ticker` | `(underlying: str, strike: float, contract_type: str, expiry_date: str) -> str` | Format `O:SPY250304C00601000`-style ticker. `contract_type` is `"call"` or `"put"` (case-insensitive). `expiry_date` is `YYYY-MM-DD`. |
+| `compute_strikes` | `(opening_price: float, n_calls: int, n_puts: int, strike_increment: float) -> Dict[str, List[float]]` | Return `{"calls": [...], "puts": [...]}`. Calls are strictly above opening; puts are at or below. If opening lands exactly on a boundary, calls start one increment up. |
+| `next_trading_day` | `(date: str) -> str` | Return first Mon–Fri strictly after `date` (YYYY-MM-DD), skipping weekends. |
+| `next_friday` | `(date: str) -> str` | Return first Friday strictly after `date`. |
+
+**Example**:
+```python
+from src.data_sources.options_ticker_builder import OptionsTickerBuilder
+
+ticker = OptionsTickerBuilder.build_ticker("SPY", 601.0, "call", "2025-03-04")
+# → "O:SPY250304C00601000"
+
+strikes = OptionsTickerBuilder.compute_strikes(600.25, n_calls=2, n_puts=2, strike_increment=0.5)
+# → {"calls": [601.0, 601.5], "puts": [600.0, 599.5]}
+```
+
+---
+
+### ContractSelector
+
+**Module**: `src.data_sources.contract_selector`
+
+Handshake module between contract discovery and bar download. Returns a uniform contract list regardless of mode.
+
+```python
+ContractSelector(
+    config: Dict[str, Any],
+    mode: str = "test",           # "test" or "prod"
+    api_key: Optional[str] = None,  # required for prod mode
+    _input_fn: Callable = input,  # injectable for testing
+)
+```
+
+| Method / Property | Signature | Description |
+|--------|-----------|-------------|
+| `needs_prompt` | `-> bool` (property) | `True` if TEST mode and `prompt_once()` has not been called yet |
+| `underlying` | `-> str` (property) | Returns underlying ticker from PROD config or TEST params |
+| `prompt_once` | `() -> None` | Interactive: ask user once for underlying, increment, n_calls, n_puts, expiry convention. Idempotent — safe to call multiple times. Raises `RuntimeError` in PROD mode. |
+| `get_contracts` | `(date: str, opening_price: float) -> List[Dict]` | Return filtered contract list. TEST: constructs tickers via `OptionsTickerBuilder`. PROD: calls `massive.list_options_contracts()`, tries up to `expiration_search_days` expiries. Auto-calls `prompt_once()` in TEST if not yet called. |
+| `_resolve_expiry` | `(date: str, convention: str, offset: int = 1, fixed_date: str = None) -> str` | Resolve an expiry convention to a `YYYY-MM-DD` string. `offset` shifts the base date by that many calendar days (used for PROD retry loop). |
+
+Output schema per contract dict:
+```python
+{
+    "ticker":        str,   # e.g. "O:SPY250304C00601000"
+    "strike":        float, # e.g. 601.0
+    "contract_type": str,   # "call" or "put"
+    "expiry_date":   str,   # "YYYY-MM-DD"
+    "underlying":    str,   # e.g. "SPY"
+}
+```
+
+**Example**:
+```python
+from src.data_sources.contract_selector import ContractSelector
+
+# TEST mode — interactive prompt once, then reuse for all dates
+sel = ContractSelector(config, mode="test")
+sel.prompt_once()  # asks: SPY / 1.0 / 1 / 1 / next_trading_day
+contracts = sel.get_contracts("2025-03-03", 600.25)
+# → [{"ticker": "O:SPY250304C00601000", "strike": 601.0, ...}, ...]
+```
+
+---
+
+### MassiveOptionsDownloader
+
+**Module**: `src.data_sources.massive_options_downloader`
+
+Generic parallel options minute-bar downloader via `massive.RESTClient.list_aggs()`. Contains zero ticker-construction or strike-selection logic — all of that is delegated to `ContractSelector`.
+
+```python
+MassiveOptionsDownloader(
+    config: Dict[str, Any],
+    api_key: str,
+    selector: ContractSelector,
+)
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `from_config` | `(config, selector) -> MassiveOptionsDownloader` (classmethod) | Construct from config, resolving API key automatically: `MASSIVE_API_KEY` → `massive.api_key` → `POLYGON_API_KEY` → `polygon.api_key`. |
+| `get_opening_price` | `(date: str, underlying: str = "SPY") -> float` | Read opening price from local Parquet — no API call. Uses `data/raw/{underlying.lower()}/{date}.parquet`. |
+| `download_tickers` | `(contracts: List[Dict], date: str, resume: bool = True) -> int` | Download bars for multiple contracts in parallel via `ThreadPoolExecutor`. Returns total bars written. |
+| `run` | `(start_date: str, end_date: str, resume: bool = True) -> Dict[str, Any]` | Full pipeline for a date range. Calls `selector.prompt_once()` once before the loop. Returns stats: `{dates_processed, dates_skipped, contracts_found, total_bars}`. |
+
+Output path: `data/raw/options/minute/{safe_ticker}/{date}.parquet`
+`safe_ticker` = ticker with `:` replaced by `_`, e.g. `O_SPY250304C00601000`.
+
+**Example**:
+```python
+from src.data_sources.contract_selector import ContractSelector
+from src.data_sources.massive_options_downloader import MassiveOptionsDownloader
+
+sel = ContractSelector(config, mode="test")
+dl = MassiveOptionsDownloader.from_config(config, sel)
+stats = dl.run("2025-03-01", "2025-03-31")
+# → {"dates_processed": 21, "dates_skipped": 8, "contracts_found": 42, "total_bars": 3541}
+```
+
+---
+
 ## Sinks
 
 ### BaseSink

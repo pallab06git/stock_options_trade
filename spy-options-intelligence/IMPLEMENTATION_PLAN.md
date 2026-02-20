@@ -259,6 +259,36 @@
 - [x] Unit tests: 68 new tests across 6 files
 - [x] Full test suite: 632 passing + 7 skipped (live market hours tests)
 
+## Step 26: Massive.com Options Download Pipeline ✅
+- [x] Create `src/data_sources/options_ticker_builder.py` (OptionsTickerBuilder)
+  - Pure math, all `@staticmethod`, no config/API/I/O
+  - `build_ticker()` — formats `O:SPY250304C00601000`-style ticker string
+  - `compute_strikes()` — n calls (strictly above opening) + n puts (at or below), boundary-safe
+  - `next_trading_day()` — first Mon–Fri strictly after date, skips weekends
+  - `next_friday()` — first Friday strictly after date
+- [x] Create `src/data_sources/contract_selector.py` (ContractSelector)
+  - TEST mode: prompts user once per cycle (underlying, increment, n_calls, n_puts, expiry convention); uses those params for every date
+  - PROD mode: calls `massive.list_options_contracts()`, filters to nearest n_calls/n_puts strikes
+  - Expiry conventions: `next_calendar_day`, `next_trading_day`, `next_friday`, `fixed`
+  - Injectable `_input_fn` for testing (no real `input()` calls in tests)
+  - Output schema: `{ticker, strike, contract_type, expiry_date, underlying}`
+- [x] Rewrite `src/data_sources/massive_options_downloader.py` (MassiveOptionsDownloader)
+  - Zero ticker-construction logic — receives contract list from `ContractSelector`
+  - `get_opening_price(date)` — reads from local SPY Parquet, no API call
+  - `download_tickers(contracts, date)` — `ThreadPoolExecutor` parallel `list_aggs()` calls
+  - `run(start_date, end_date)` — full date loop; calls `selector.prompt_once()` once before tqdm loop
+  - Resume support: skips contracts whose Parquet already exists
+  - Output: `data/raw/options/minute/{safe_ticker}/{date}.parquet`
+- [x] Add `download-massive-options` CLI command to `src/cli.py`
+  - Flags: `--start-date`, `--end-date`, `--mode [test|prod]`, `--resume/--no-resume`
+  - `--mode` overrides `pipeline_v2.contract_selector.mode` from config
+- [x] Add `massive>=2.2.0` to `requirements.txt`; installed in project venv
+- [x] Fix `config/sources.yaml` — replace `${MASSIVE_API_KEY}` with `""` so downloader's own fallback chain picks up `POLYGON_API_KEY`
+- [x] Update `config/pipeline_v2.yaml` — add `contract_selector` section and `max_workers` to `massive_options`
+- [x] Unit tests: 43 (OptionsTickerBuilder) + 38 (ContractSelector) + 35 (MassiveOptionsDownloader) = 116 new tests
+- [x] Live test: 21 trading days of March 2025 downloaded — 42 contracts, 3,541 bars in 26 seconds
+- [x] Full test suite: 763 passing + 7 skipped
+
 ## Future
 - [ ] LSTM model training
 - [ ] Signal validator implementation
@@ -266,4 +296,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 647 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-19**
+**Total tests: 763 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-20**
