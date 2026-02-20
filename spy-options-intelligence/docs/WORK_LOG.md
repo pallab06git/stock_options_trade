@@ -33,8 +33,9 @@ Implementation history for SPY Options Intelligence Platform — Phase 1.
 | 22 | 2026-02-18 | `f065057` | Data purge manager and memory leak fixes — LRU dedup, throughput pruning, vectorized Greeks | 21 |
 | 23 | 2026-02-18 | `12dbc17` | Feature engineering and analysis rebuild — MinuteDownloader, FeatureEngineer, OptionsScanner, Streamlit dashboard | 70 |
 | 24 | 2026-02-19 | `d98f679` | Retry handler refinements — exponential backoff (5xx + 429), auth log+skip, SkippableError | 9 |
+| 25 | 2026-02-19 | `12dbc17` | Options strike selection fix — `_compute_strikes()` with math.ceil/floor, $0.50 increment, 6 new tests | 6 |
 
-**Total**: 641 tests passing + 7 live tests (skipped outside market hours)
+**Total**: 647 tests passing + 7 live tests (skipped outside market hours)
 
 ---
 
@@ -56,6 +57,13 @@ Implementation history for SPY Options Intelligence Platform — Phase 1.
 - Greeks computed per-row as scalars (delta, gamma, theta, vega, rho, IV)
 - `TrainingDataPrep` separated from `Consolidator` — target prices are offline ML prep only
 - `merge_asof` for VIX and news time alignment
+
+### Options Strike Selection (Step 25)
+- SPY options use $0.50 strike increments — a ±5% discovery range was far too wide and returned irrelevant contracts
+- `_compute_strikes(opening)` uses `math.ceil(opening / increment) * increment` for the first call strike and `math.floor(opening / increment) * increment` for the first put strike
+- Edge case: when opening lands exactly on a strike boundary, calls start one increment above (so calls are always strictly above opening)
+- Returned contracts matched with 1-cent tolerance (`abs(strike - target) < 0.01`) for floating-point safety
+- Live test confirmed: opening=593.88 → calls [594.0, 594.5], puts [593.5, 593.0] — logic correct; API returns empty due to free-tier limitation
 
 ### Retry Behaviour (Step 24)
 - All retried errors (5xx + 429) use exponential backoff: `initial_wait * base^(attempt-1)`, capped at `max_wait`
@@ -98,7 +106,7 @@ Implementation history for SPY Options Intelligence Platform — Phase 1.
 | Process manager | 8 | List/stop workers, SIGTERM |
 | Health dashboard | 11 | Session aggregation, table format |
 | Streaming runner | 10 | Buffer, flush, heartbeat, market close |
-| Options client | 14 | Discovery, strike range, save/load |
+| Options client | 20 | Discovery, exact strike computation (math.ceil/floor), save/load |
 | Options streaming | 7 | Compound dedup, contract loading |
 | VIX client | 13 | Historical, streaming, transform |
 | News client | 18 | Backfill, polling, sentiment extraction |

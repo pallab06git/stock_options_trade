@@ -222,6 +222,19 @@
 - [x] Unit tests: 12 purge + 5 dedup LRU + 2 perf pruning + 2 error LRU = 21 new tests
 - [x] Full test suite verification (564 passed, 7 skipped)
 
+## Step 25: Options Strike Selection Fix ✅
+- [x] Replace `discovery_range_pct: 0.05` (±5% wide range) with `strike_increment: 0.5` in `config/pipeline_v2.yaml`
+- [x] Add `_compute_strikes()` to `TargetedOptionsDownloader` — mathematically computes exact target strikes:
+      - Calls: n strikes immediately above opening via `math.ceil`
+      - Puts:  n strikes immediately at or below opening via `math.floor`
+      - Edge case: if opening lands exactly on a strike boundary, calls start one increment up
+- [x] Rewrite `discover_targeted()` to query Polygon with tight range (only the 4 target strikes) instead of ±5%
+- [x] Match returned contracts by exact strike with 1-cent tolerance (floating-point safe)
+- [x] Add `TestComputeStrikes` (6 tests): fractional opening, exact boundary, strict above/below invariants, user example
+- [x] Live test confirmed: strike logic correct (opening=593.88 → calls [594.0, 594.5], puts [593.5, 593.0])
+- [x] Live test confirmed: options API returns empty — free tier limitation, not a code bug
+- [x] Full test suite: 647 passing + 7 skipped
+
 ## Step 24: Retry Handler Refinements ✅
 - [x] Exponential backoff for all retried errors (5xx + 429): `initial_wait * base^(attempt-1)`, capped at `max_wait`
 - [x] Auth failures (401, 403): log WARNING + return None immediately — no retry, prevents account lockout
@@ -253,4 +266,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 641 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-19**
+**Total tests: 647 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-19**
