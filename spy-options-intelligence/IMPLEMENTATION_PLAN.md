@@ -222,6 +222,14 @@
 - [x] Unit tests: 12 purge + 5 dedup LRU + 2 perf pruning + 2 error LRU = 21 new tests
 - [x] Full test suite verification (564 passed, 7 skipped)
 
+## Step 24: Retry Handler Refinements ✅
+- [x] Exponential backoff for all retried errors (5xx + 429): `initial_wait * base^(attempt-1)`, capped at `max_wait`
+- [x] Auth failures (401, 403): log WARNING + return None immediately — no retry, prevents account lockout
+- [x] New `SkippableError` exception for data quality issues and schema drift: log WARNING + return None, no retry
+- [x] `with_retry` restructured from raw tenacity decorator → outer wrapper that intercepts SkippableError and auth errors
+- [x] Updated 2 existing tests, added 7 new tests (auth skip, SkippableError, backoff growth across all 5xx/429)
+- [x] Full test suite: 641 passing + 7 skipped
+
 ## Step 23: Feature Engineering & Analysis Rebuild ✅
 - [x] Add `streamlit>=1.30.0` to requirements.txt
 - [x] Create `config/pipeline_v2.yaml` (date range, lag windows, options targeting, scanner, reporting config)
@@ -245,4 +253,4 @@
 - [ ] Backtesting framework
 
 ---
-**Total tests: 632 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-18**
+**Total tests: 641 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-19**
