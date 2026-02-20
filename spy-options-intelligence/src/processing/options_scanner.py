@@ -53,6 +53,10 @@ class OptionsScanner:
         self.features_path = Path(
             reporting_cfg.get("features_path", "data/processed/features")
         )
+        self._last_scan_stats: Dict[str, Any] = {
+            "contract_days": 0,
+            "total_bars": 0,
+        }
 
     # ------------------------------------------------------------------
     # Public API
@@ -70,10 +74,13 @@ class OptionsScanner:
         """
         dates = self._date_range(start_date, end_date)
         all_events: List[Dict[str, Any]] = []
+        contract_days = 0
+        total_bars = 0
 
         options_dir = self.features_path / "options"
         if not options_dir.exists():
             logger.warning(f"Options features directory not found: {options_dir}")
+            self._last_scan_stats = {"contract_days": 0, "total_bars": 0}
             return []
 
         for date in dates:
@@ -85,8 +92,11 @@ class OptionsScanner:
                     continue
 
                 try:
+                    df_loaded = pd.read_parquet(feat_path)
+                    contract_days += 1
+                    total_bars += len(df_loaded)
                     events = self._scan_single(
-                        feat_path, ticker_dir.name, date
+                        feat_path, ticker_dir.name, date, _df=df_loaded
                     )
                     all_events.extend(events)
                 except Exception as exc:
@@ -94,6 +104,10 @@ class OptionsScanner:
                         f"Scan failed for {ticker_dir.name}/{date}: {exc}"
                     )
 
+        self._last_scan_stats = {
+            "contract_days": contract_days,
+            "total_bars": total_bars,
+        }
         logger.info(
             f"Scan [{start_date} → {end_date}]: {len(all_events)} events found"
         )
@@ -139,24 +153,62 @@ class OptionsScanner:
         df.to_csv(out_path, index=False)
 
         # Console summary
+        cdays = self._last_scan_stats["contract_days"]
+        t_bars = self._last_scan_stats["total_bars"]
+        n_events = len(events)
+
         print(f"\n--- Options Movement Report ---")
-        print(f"Period:       {start_date} → {end_date}")
-        print(f"Events:       {len(events)}")
-        if events:
-            df_num = df[df["gain_pct"].notna()]
-            if not df_num.empty:
-                print(f"Avg gain:     {df_num['gain_pct'].mean():.1f}%")
-                print(
-                    f"Avg >20% dur: "
-                    f"{df_num['above_20pct_duration_min'].mean():.1f} min"
-                )
-                print(
-                    f"Avg >10% dur: "
-                    f"{df_num['above_10pct_duration_min'].mean():.1f} min"
-                )
-                top = df_num.nlargest(5, "gain_pct")[["date", "ticker", "gain_pct"]]
-                print(f"Top movers:\n{top.to_string(index=False)}")
-        print(f"Saved to:     {out_path}")
+        print(f"Period:                   {start_date} → {end_date}")
+        print(f"Contract-days scanned:    {cdays}")
+        print(f"Total minute bars:        {t_bars}")
+        print(f"Total events:             {n_events}")
+
+        if n_events > 0:
+            df_ev = pd.DataFrame(events)
+
+            # Events per contract-day (zeros included for no-event days)
+            per_cday = df_ev.groupby(["date", "ticker"]).size().values
+            n_zero = max(0, cdays - len(per_cday))
+            all_counts = np.concatenate(
+                [per_cday, np.zeros(n_zero, dtype=int)]
+            ) if cdays > 0 else per_cday
+            print(
+                f"Events/contract-day:      "
+                f"min={int(all_counts.min())} "
+                f"median={np.median(all_counts):.1f} "
+                f"max={int(all_counts.max())}"
+            )
+
+            # Positive-minute stats
+            total_pos_mins = int(df_ev["above_20pct_duration_min"].sum())
+            pos_rate = total_pos_mins / t_bars * 100.0 if t_bars > 0 else 0.0
+            med_dur = df_ev["above_20pct_duration_min"].median()
+            mean_dur = df_ev["above_20pct_duration_min"].mean()
+            print(f"Total >20% minutes:       {total_pos_mins}")
+            print(f"Positive-minute rate:     {pos_rate:.2f}%")
+            print(
+                f"Duration >20% (med/mean): "
+                f"{med_dur:.1f} / {mean_dur:.1f} min"
+            )
+
+            # Hour distribution
+            df_ev["_hour"] = pd.to_numeric(
+                df_ev["trigger_time_et"].str[:2], errors="coerce"
+            ).fillna(0).astype(int)
+            hour_counts = df_ev.groupby("_hour").size()
+            if not hour_counts.empty:
+                max_cnt = hour_counts.max()
+                print(f"\nEvent distribution by trigger hour (ET):")
+                for hour, cnt in sorted(hour_counts.items()):
+                    bar_len = round(cnt / max_cnt * 30) if max_cnt > 0 else 0
+                    print(f"  {hour:02d}:xx  {cnt:4d}  {'#' * bar_len}")
+        else:
+            print(f"Events/contract-day:      min=0 median=0.0 max=0")
+            print(f"Total >20% minutes:       0")
+            print(f"Positive-minute rate:     0.00%")
+            print(f"Duration >20% (med/mean): N/A")
+
+        print(f"\nSaved to: {out_path}")
         return out_path
 
     def load_reports(
@@ -206,6 +258,7 @@ class OptionsScanner:
         feat_path: Path,
         safe_ticker: str,
         date: str,
+        _df: Optional[pd.DataFrame] = None,
     ) -> List[Dict[str, Any]]:
         """Scan one options feature file for 20%+ moves.
 
@@ -221,7 +274,7 @@ class OptionsScanner:
 
         et_tz = pytz.timezone("America/New_York")
 
-        df = pd.read_parquet(feat_path)
+        df = _df if _df is not None else pd.read_parquet(feat_path)
         if df.empty or "close" not in df.columns:
             return []
 

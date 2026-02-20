@@ -199,6 +199,104 @@ class TestGenerateReport:
         assert len(df) == 0
 
 
+_SAMPLE_EVENT = {
+    "date": "2025-03-03",
+    "ticker": "O:SPY250305C00605000",
+    "trigger_time_et": "10:30:00",
+    "reference_time_et": "09:30:00",
+    "gain_pct": 25.0,
+    "above_20pct_duration_min": 10,
+    "above_10pct_duration_min": 15,
+    "reference_price": 10.0,
+    "trigger_price": 12.5,
+}
+
+
+class TestScanStats:
+    def test_scan_updates_contract_days_and_bars(self, tmp_path):
+        """scan() tracks contract_days and total_bars in _last_scan_stats."""
+        prices = [10.0] * 20
+        _write_feature_file(tmp_path, "2025-03-03", "O:SPY250305C00605000", prices)
+        scanner = OptionsScanner(_make_config(tmp_path))
+        scanner.scan("2025-03-01", "2025-03-31")
+        assert scanner._last_scan_stats["contract_days"] == 1
+        assert scanner._last_scan_stats["total_bars"] == 20
+
+    def test_scan_stats_empty_dir(self, tmp_path):
+        """No feature files → stats are zeros."""
+        scanner = OptionsScanner(_make_config(tmp_path))
+        scanner.scan("2025-03-01", "2025-03-31")
+        assert scanner._last_scan_stats["contract_days"] == 0
+        assert scanner._last_scan_stats["total_bars"] == 0
+
+    def test_scan_multiple_contract_days(self, tmp_path):
+        """Two ticker-date parquets → contract_days=2, bars summed."""
+        _write_feature_file(tmp_path, "2025-03-03", "O:SPY250305C00605000", [10.0] * 15)
+        _write_feature_file(tmp_path, "2025-03-04", "O:SPY250305C00606000", [8.0] * 25)
+        scanner = OptionsScanner(_make_config(tmp_path))
+        scanner.scan("2025-03-01", "2025-03-31")
+        assert scanner._last_scan_stats["contract_days"] == 2
+        assert scanner._last_scan_stats["total_bars"] == 40
+
+
+class TestGenerateReportMetrics:
+    def test_prints_contract_days_and_bars(self, tmp_path, capsys):
+        scanner = OptionsScanner(_make_config(tmp_path))
+        scanner._last_scan_stats = {"contract_days": 5, "total_bars": 300}
+        scanner.generate_report([_SAMPLE_EVENT], "2025-03-01", "2025-03-31")
+        out = capsys.readouterr().out
+        assert "Contract-days scanned:" in out
+        assert "5" in out
+        assert "Total minute bars:" in out
+        assert "300" in out
+
+    def test_prints_total_events(self, tmp_path, capsys):
+        scanner = OptionsScanner(_make_config(tmp_path))
+        scanner._last_scan_stats = {"contract_days": 2, "total_bars": 100}
+        scanner.generate_report([_SAMPLE_EVENT], "2025-03-01", "2025-03-31")
+        out = capsys.readouterr().out
+        assert "Total events:" in out
+        assert "1" in out
+
+    def test_prints_events_per_contract_day(self, tmp_path, capsys):
+        scanner = OptionsScanner(_make_config(tmp_path))
+        scanner._last_scan_stats = {"contract_days": 3, "total_bars": 150}
+        # 1 event across 3 contract-days → two zero-event days
+        scanner.generate_report([_SAMPLE_EVENT], "2025-03-01", "2025-03-31")
+        out = capsys.readouterr().out
+        assert "Events/contract-day:" in out
+        assert "min=0" in out
+        assert "max=1" in out
+
+    def test_prints_positive_minute_stats(self, tmp_path, capsys):
+        scanner = OptionsScanner(_make_config(tmp_path))
+        scanner._last_scan_stats = {"contract_days": 1, "total_bars": 100}
+        scanner.generate_report([_SAMPLE_EVENT], "2025-03-01", "2025-03-31")
+        out = capsys.readouterr().out
+        assert "Total >20% minutes:" in out
+        assert "10" in out  # above_20pct_duration_min = 10
+        assert "Positive-minute rate:" in out
+        assert "10.00%" in out  # 10/100 * 100
+        assert "Duration >20% (med/mean):" in out
+
+    def test_prints_hour_distribution(self, tmp_path, capsys):
+        scanner = OptionsScanner(_make_config(tmp_path))
+        scanner._last_scan_stats = {"contract_days": 1, "total_bars": 100}
+        scanner.generate_report([_SAMPLE_EVENT], "2025-03-01", "2025-03-31")
+        out = capsys.readouterr().out
+        assert "Event distribution by trigger hour" in out
+        assert "10:xx" in out  # trigger_time_et = "10:30:00"
+
+    def test_no_events_prints_zeros(self, tmp_path, capsys):
+        scanner = OptionsScanner(_make_config(tmp_path))
+        scanner._last_scan_stats = {"contract_days": 5, "total_bars": 300}
+        scanner.generate_report([], "2025-03-01", "2025-03-31")
+        out = capsys.readouterr().out
+        assert "Total events:             0" in out
+        assert "0.00%" in out
+        assert "min=0 median=0.0 max=0" in out
+
+
 class TestLoadReports:
     def test_load_returns_empty_when_no_dir(self, tmp_path):
         scanner = OptionsScanner(_make_config(tmp_path))
