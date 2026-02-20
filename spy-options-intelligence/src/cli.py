@@ -1105,6 +1105,95 @@ def download_options_targeted(config_dir, start_date, end_date, resume):
         sys.exit(1)
 
 
+@cli.command("download-massive-options")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--start-date",
+    required=True,
+    help="Start date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    required=True,
+    help="End date (YYYY-MM-DD).",
+)
+@click.option(
+    "--mode",
+    default=None,
+    type=click.Choice(["test", "prod"]),
+    help="Override contract_selector.mode from config (test or prod).",
+)
+@click.option(
+    "--resume/--no-resume",
+    default=True,
+    help="Skip contracts whose Parquet file already exists (default: --resume).",
+)
+def download_massive_options(config_dir, start_date, end_date, mode, resume):
+    """Download options minute bars via Massive.com list_aggs().
+
+    TEST mode (free tier): asks questions once per run (underlying, increment,
+    n_calls, n_puts, expiry convention) then constructs tickers mathematically.
+
+    PROD mode (paid tier): calls list_options_contracts() to discover contracts,
+    filters to nearest n_calls calls + n_puts puts, then downloads bars.
+
+    Requires underlying minute Parquet files to already exist for each date
+    (produced by download-minute --ticker SPY).
+    """
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.data_sources.contract_selector import ContractSelector
+        from src.data_sources.massive_options_downloader import MassiveOptionsDownloader
+        from src.utils.hardware_monitor import HardwareMonitor
+
+        # Resolve selector mode: CLI flag > config > default "test"
+        selector_mode = mode or (
+            config.get("pipeline_v2", {})
+                  .get("contract_selector", {})
+                  .get("mode", "test")
+        )
+
+        # API key resolution mirrors MassiveOptionsDownloader.from_config()
+        import os
+        api_key = (
+            os.getenv("MASSIVE_API_KEY")
+            or config.get("massive", {}).get("api_key", "")
+            or os.getenv("POLYGON_API_KEY")
+            or config.get("polygon", {}).get("api_key", "")
+        )
+
+        selector = ContractSelector(config, mode=selector_mode, api_key=api_key or None)
+        downloader = MassiveOptionsDownloader.from_config(config, selector)
+
+        monitor = HardwareMonitor(config)
+        monitor.start("download-massive-options")
+
+        try:
+            stats = downloader.run(start_date, end_date, resume=resume)
+        finally:
+            monitor.stop()
+
+        click.echo(f"\n--- Massive Options Download Summary ---")
+        click.echo(f"Mode:              {selector_mode}")
+        click.echo(f"Date range:        {start_date} → {end_date}")
+        click.echo(f"Dates processed:   {stats['dates_processed']}")
+        click.echo(f"Dates skipped:     {stats['dates_skipped']}")
+        click.echo(f"Contracts found:   {stats['contracts_found']}")
+        click.echo(f"Total bars:        {stats['total_bars']}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 @cli.command("engineer-features")
 @click.option(
     "--config-dir",

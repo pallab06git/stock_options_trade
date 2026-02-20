@@ -1,5 +1,10 @@
 # Data source configuration — all sources use Polygon.io API
 
+massive:
+  # Massive.com data provider — same key format as Polygon.io
+  # Falls back to POLYGON_API_KEY env var if MASSIVE_API_KEY is not set
+  api_key: ${MASSIVE_API_KEY}
+
 polygon:
   api_key: ${POLYGON_API_KEY}
   base_url: "https://api.polygon.io"

@@ -17,6 +17,25 @@ pipeline_v2:
     strike_increment: 0.5          # SPY options strike price increment in dollars
     expiration_search_days: 5      # look for expiry within next 5 calendar days
 
+  # MassiveOptionsDownloader — ticker construction approach (no list_options_contracts)
+  # Use when Polygon contract discovery returns empty (free tier) or for Massive.com client
+  massive_options:
+    limit_per_request: 500         # bars per list_aggs call (390 bars/day max for minute)
+    max_workers: 4                 # parallel download threads (one per contract)
+
+  # ContractSelector — handshake between contract discovery and bar download
+  # mode: "test" uses interactive prompting once per cycle (free tier)
+  #        "prod" calls Massive list_options_contracts() and filters (paid tier)
+  contract_selector:
+    mode: "test"
+    prod:
+      underlying: "SPY"
+      n_calls: 2
+      n_puts: 2
+      strike_increment: 0.5          # SPY $0.50 increments on paid tier
+      expiry_convention: "next_trading_day"   # next_calendar_day | next_trading_day | next_friday | fixed
+      expiration_search_days: 5      # retry up to 5 expiry offsets in PROD if API returns empty
+
   scanner:
     reference_window_minutes: 120  # rolling lookback to find reference price
     trigger_threshold_pct: 20.0    # 20%+ move triggers an event
