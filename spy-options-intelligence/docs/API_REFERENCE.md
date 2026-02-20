@@ -169,6 +169,57 @@ for article in client.fetch_historical("2025-01-15", "2025-01-15"):
 
 ---
 
+### MinuteDownloader
+
+**Module**: `src.data_sources.minute_downloader`
+
+Bulk-download SPY (and optionally VIX) per-minute bars for a full calendar month.
+
+```python
+MinuteDownloader(config: Dict[str, Any])
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `download_month` | `(ticker: str, year: int, month: int) -> int` | Download all trading days in a month; returns record count |
+| `download_range` | `(ticker: str, start_date: str, end_date: str) -> int` | Download an arbitrary date range; returns record count |
+
+**Example**:
+```python
+from src.data_sources.minute_downloader import MinuteDownloader
+
+dl = MinuteDownloader(config)
+count = dl.download_month("SPY", year=2025, month=3)
+# Writes data/raw/spy/2025-03-01.parquet, 2025-03-03.parquet, ...
+```
+
+---
+
+### TargetedOptionsDownloader
+
+**Module**: `src.data_sources.targeted_options_downloader`
+
+Download a small, targeted set of options per day (2 ATM calls + 2 ATM puts) to stay within free-tier API limits.
+
+```python
+TargetedOptionsDownloader(config: Dict[str, Any])
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `download_day` | `(date: str) -> List[Dict]` | Download ATM options for one trading day |
+| `run` | `(start_date: str, end_date: str) -> Dict[str, Any]` | Resilient batch run; skips dates with no data; returns stats |
+
+**Example**:
+```python
+from src.data_sources.targeted_options_downloader import TargetedOptionsDownloader
+
+dl = TargetedOptionsDownloader(config)
+stats = dl.run("2025-03-01", "2025-03-31")
+```
+
+---
+
 ## Sinks
 
 ### BaseSink
@@ -330,6 +381,58 @@ from src.processing.training_data_prep import TrainingDataPrep
 prep = TrainingDataPrep(config)
 stats = prep.prepare(["2025-01-15", "2025-01-16"])
 # Output: data/processed/training/2025-01-15.parquet, ...
+```
+
+---
+
+### FeatureEngineer
+
+**Module**: `src.processing.feature_engineer`
+
+Compute lagged percentage-change features and implied-volatility features from SPY minute bars.
+
+```python
+FeatureEngineer(config: Dict[str, Any])
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `engineer` | `(date: str) -> Dict[str, Any]` | Compute features for one trading day; returns stats |
+| `engineer_range` | `(start_date: str, end_date: str) -> Dict[str, Any]` | Compute features for a date range; returns stats |
+
+**Example**:
+```python
+from src.processing.feature_engineer import FeatureEngineer
+
+fe = FeatureEngineer(config)
+stats = fe.engineer("2025-03-04")
+# Output: data/processed/features/2025-03-04.parquet
+```
+
+---
+
+### OptionsScanner
+
+**Module**: `src.processing.options_scanner`
+
+Scan consolidated options data for significant moves (≥20% threshold) and emit a summary CSV of events.
+
+```python
+OptionsScanner(config: Dict[str, Any])
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `scan` | `(date: str) -> Dict[str, Any]` | Scan one day; returns event count and output path |
+| `scan_range` | `(start_date: str, end_date: str) -> Dict[str, Any]` | Scan a date range; aggregates events across all days |
+
+**Example**:
+```python
+from src.processing.options_scanner import OptionsScanner
+
+scanner = OptionsScanner(config)
+stats = scanner.scan_range("2025-03-01", "2025-03-31")
+# Output: data/processed/scanner/events.csv
 ```
 
 ---
@@ -638,17 +741,57 @@ ConnectionManager(config: dict)
 
 ---
 
-### RetryHandler
+### retry_handler — `with_retry`, `RetryableError`, `SkippableError`
 
 **Module**: `src.utils.retry_handler`
 
-Configurable retry logic with exponential backoff and jitter.
+Decorator factory for configurable retry logic with exponential backoff and selective skip behaviour.
+
+#### `with_retry` — decorator factory
 
 ```python
-RetryHandler(config: dict, profile: str = "default")
+with_retry(source: str = "default", config: Optional[Dict] = None) -> Callable
 ```
 
-Wraps callables with retry logic based on `retry_policy.yaml` profiles. Supports `max_attempts`, `initial_wait_seconds`, `max_wait_seconds`, `exponential_base`, `jitter`, and `retry_on_status_codes`.
+Wraps a function with retry and skip logic driven by `retry_policy.yaml` profiles. Behaviour by error type:
+
+| Error | Behaviour |
+|-------|-----------|
+| `RetryableError` (5xx / 429) | Exponential backoff: `initial_wait * base^(attempt−1)`, capped at `max_wait`. Raises after `max_attempts`. |
+| `RetryableError` (401 / 403) | Log WARNING + return `None` immediately. Never retried — prevents account lockout. |
+| `SkippableError` | Log WARNING + return `None` immediately. No retry — bad data won't improve on retry. |
+
+Config keys per profile: `max_attempts`, `initial_wait_seconds`, `max_wait_seconds`, `exponential_base`, `jitter`, `retry_on_status_codes`.
+
+**Example**:
+```python
+from src.utils.retry_handler import with_retry, RetryableError, SkippableError
+
+@with_retry(source="polygon", config=app_config)
+def fetch():
+    raise RetryableError("Server error", status_code=500)  # retried with backoff
+
+@with_retry(source="polygon", config=app_config)
+def validate_record(record):
+    if record.get("close") is None:
+        raise SkippableError("Null close price")  # logged and skipped
+```
+
+#### `RetryableError`
+
+```python
+RetryableError(message: str, status_code: int = 0)
+```
+
+Exception wrapping an HTTP status code. Raised by data source clients to signal retryable or auth-failure conditions.
+
+#### `SkippableError`
+
+```python
+SkippableError(message: str)
+```
+
+Exception for data quality issues (malformed records, unexpected nulls) and schema drift. Causes the decorated function to log and return `None` without any retry.
 
 ---
 
@@ -689,4 +832,113 @@ from src.utils.logger import setup_logger, get_logger
 setup_logger(config)
 logger = get_logger()
 logger.info("Pipeline started")
+```
+
+---
+
+### PurgeManager
+
+**Module**: `src.utils.purge_manager`
+
+Delete old files according to per-category retention policies configured in `settings.yaml`.
+
+```python
+PurgeManager(config: Dict[str, Any])
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `purge` | `(category: str = None, retention_days: int = None, dry_run: bool = True) -> Dict[str, Any]` | Delete files older than retention threshold; returns stats. `dry_run=True` by default — set `False` to actually delete. |
+| `purge_all` | `(dry_run: bool = True) -> Dict[str, Any]` | Purge all configured categories; returns per-category stats. |
+
+**Example**:
+```python
+from src.utils.purge_manager import PurgeManager
+
+pm = PurgeManager(config)
+stats = pm.purge(category="raw_data", retention_days=30, dry_run=False)
+```
+
+---
+
+### SpaceReporter
+
+**Module**: `src.utils.space_reporter`
+
+Walk the `data/` directory tree and report storage usage by category with compression estimates.
+
+```python
+SpaceReporter(config: Dict[str, Any])
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `report` | `() -> Dict[str, Any]` | Return size breakdown by category (bytes, file count, compression ratio) |
+| `format_table` | `(report: Dict) -> str` | Format the report as a human-readable text table |
+
+**Example**:
+```python
+from src.utils.space_reporter import SpaceReporter
+
+sr = SpaceReporter(config)
+print(sr.format_table(sr.report()))
+```
+
+---
+
+### HardwareMonitor
+
+**Module**: `src.utils.hardware_monitor`
+
+Track CPU, memory, and disk usage via psutil with optional function-level profiling decorator.
+
+```python
+HardwareMonitor(config: Dict[str, Any])
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `snapshot` | `() -> Dict[str, Any]` | Return current CPU %, memory RSS (MB), and disk usage % |
+| `profile` | `(fn: Callable) -> Callable` | Decorator — log resource usage before and after a function call |
+| `report` | `() -> str` | Format a human-readable hardware summary string |
+
+**Example**:
+```python
+from src.utils.hardware_monitor import HardwareMonitor
+
+hm = HardwareMonitor(config)
+print(hm.report())
+
+@hm.profile
+def heavy_computation():
+    ...
+```
+
+---
+
+## Reporting
+
+### Dashboard
+
+**Module**: `src.reporting.dashboard`
+
+3-tab Streamlit dashboard for visualising SPY features, options scanner events, and system metrics.
+
+```python
+Dashboard(config: Dict[str, Any])
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `run` | `() -> None` | Launch Streamlit app (called via `streamlit run`) |
+
+Tabs:
+- **SPY Features** — plot lagged returns, rolling volatility, and feature distributions from `data/processed/features/`
+- **Options Scanner** — display significant-move events from the scanner CSV with filters
+- **Hardware & Storage** — live CPU/memory/disk snapshot and data directory size breakdown
+
+**Launch via CLI**:
+```bash
+python -m src.cli dashboard
+# equivalent to: streamlit run src/reporting/dashboard.py
 ```
