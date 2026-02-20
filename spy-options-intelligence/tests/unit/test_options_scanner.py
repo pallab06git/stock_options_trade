@@ -114,6 +114,43 @@ class TestOptionsScanner:
         # Should only find one event (not one per bar in the spike)
         assert len(events) == 1
 
+    def test_no_refire_from_same_reference_low(self, tmp_path):
+        """After a move drops below 10%, the scanner must NOT re-trigger from the
+        same reference low.  This was the live-data bug: one intraday trough
+        generating 5–10 events on the same contract-day."""
+        scanner = OptionsScanner(_make_config(tmp_path))
+        # Low: 10.0 (bars 0–9)
+        # Spike A: 12.5 (+25%) bars 10–14  → event fires
+        # Drop:    10.5 (< 10% above 10.0=11.0) bars 15–19  → below sustained
+        # Spike B: 12.5 (+19% above new ref 10.5) bars 20–24 → should NOT fire
+        #          (19% < 20% threshold from the fresh reference window)
+        prices = [10.0] * 10 + [12.5] * 5 + [10.5] * 5 + [12.5] * 5
+        path = _write_feature_file(tmp_path, "2025-03-03", "O:SPY250305C00605000", prices)
+        events = scanner._scan_single(path, "O_SPY250305C00605000", "2025-03-03")
+        assert len(events) == 1, (
+            f"Expected 1 event (same-low re-fire suppressed), got {len(events)}: {events}"
+        )
+
+    def test_independent_second_event_allowed(self, tmp_path):
+        """A genuine new 20%+ move from a fresh low established AFTER the first
+        event ends must still be detected as a separate event."""
+        scanner = OptionsScanner(_make_config(tmp_path))
+        # Event A: low 10.0 → spike 12.5 → drops to 10.5 (event ends)
+        # New low:  9.0 established after event A
+        # Event B: 9.0 → spike 11.0 (+22%) — genuinely independent
+        prices = (
+            [10.0] * 10   # reference low for event A
+            + [12.5] * 5  # event A spike
+            + [10.5] * 3  # drops below 10% (10.0 * 1.10 = 11.0 > 10.5)
+            + [9.0]  * 3  # new lower low after event A ends
+            + [11.0] * 5  # event B: 11.0 / 9.0 = +22.2%
+        )
+        path = _write_feature_file(tmp_path, "2025-03-03", "O:SPY250305C00605000", prices)
+        events = scanner._scan_single(path, "O_SPY250305C00605000", "2025-03-03")
+        assert len(events) == 2, (
+            f"Expected 2 independent events, got {len(events)}: {events}"
+        )
+
 
 class TestScan:
     def test_scan_empty_dir(self, tmp_path):

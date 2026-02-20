@@ -233,6 +233,12 @@ class OptionsScanner:
         events: List[Dict[str, Any]] = []
         consumed = np.zeros(n, dtype=bool)  # bars already part of a prior event
 
+        # Floor for the reference window start.  After each event ends (price drops
+        # below the sustained threshold), this advances to the bar after the drop.
+        # This prevents the same intraday low from triggering multiple independent
+        # events: a new event must establish a fresh low AFTER the previous one ended.
+        min_ref_start_bar = 0
+
         trigger_mult = 1.0 + self.trigger_pct / 100.0
         sustained_mult = 1.0 + self.sustained_pct / 100.0
 
@@ -240,8 +246,9 @@ class OptionsScanner:
             if consumed[t]:
                 continue
 
-            # Reference window: [max(0, t-ref_window) : t]
-            ref_start = max(0, t - self.ref_window)
+            # Reference window: [max(min_ref_start_bar, t-ref_window) : t]
+            # The floor prevents looking back into a trough that already fired an event.
+            ref_start = max(min_ref_start_bar, t - self.ref_window)
             ref_prices = close[ref_start:t]
             if len(ref_prices) == 0:
                 continue
@@ -263,6 +270,7 @@ class OptionsScanner:
             # Measure durations forward from trigger bar
             above_20_dur = 0
             above_10_dur = 0
+            event_end_bar = n  # default: move runs to end of data
             for fwd in range(t, n):
                 consumed[fwd] = True
                 if close[fwd] >= ref_price * trigger_mult:
@@ -270,8 +278,15 @@ class OptionsScanner:
                 if close[fwd] >= ref_price * sustained_mult:
                     above_10_dur += 1
                 else:
-                    # Once it drops below 10% sustained level, stop tracking
+                    # Once it drops below 10% sustained level, stop tracking.
+                    # Advance the reference floor to here so subsequent events
+                    # cannot reuse the low that generated this one.
+                    event_end_bar = fwd + 1
                     break
+
+            # Advance reference floor regardless of whether the loop hit the break
+            # (if it ran to end-of-data, event_end_bar == n and no further bars exist).
+            min_ref_start_bar = event_end_bar
 
             # Convert timestamps to ET strings
             def _ts_to_et(ts_ms: int) -> str:
