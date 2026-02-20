@@ -2,8 +2,9 @@
 
 massive:
   # Massive.com data provider — same key format as Polygon.io
-  # Falls back to POLYGON_API_KEY env var if MASSIVE_API_KEY is not set
-  api_key: ${MASSIVE_API_KEY}
+  # Leave api_key empty; MassiveOptionsDownloader falls back to POLYGON_API_KEY
+  # (set MASSIVE_API_KEY in .env only if you have a separate Massive key)
+  api_key: ""
 
 polygon:
   api_key: ${POLYGON_API_KEY}
