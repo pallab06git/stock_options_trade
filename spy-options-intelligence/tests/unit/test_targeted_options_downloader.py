@@ -27,7 +27,7 @@ def config(tmp_path):
             "options": {
                 "n_calls": 2,
                 "n_puts": 2,
-                "discovery_range_pct": 0.05,
+                "strike_increment": 0.5,
                 "expiration_search_days": 3,
             }
         },
@@ -95,14 +95,14 @@ class TestGetOpeningPrice:
 
 class TestDiscoverTargeted:
     def test_selects_n_calls_n_puts(self, config, mock_cm, tmp_path):
+        # opening=603.0, increment=0.5 →
+        #   call strikes: [603.5, 604.0]  (immediately above)
+        #   put  strikes: [603.0, 602.5]  (at or below)
         contracts = [
-            _make_contract("O:SPY250305C00595000", 595.0, "call"),
-            _make_contract("O:SPY250305C00600000", 600.0, "call"),
-            _make_contract("O:SPY250305C00605000", 605.0, "call"),  # above open
-            _make_contract("O:SPY250305C00610000", 610.0, "call"),  # above open
-            _make_contract("O:SPY250305P00590000", 590.0, "put"),   # below open
-            _make_contract("O:SPY250305P00585000", 585.0, "put"),   # below open
-            _make_contract("O:SPY250305P00580000", 580.0, "put"),   # below open
+            _make_contract("O:SPY250305C00603500", 603.5, "call"),
+            _make_contract("O:SPY250305C00604000", 604.0, "call"),
+            _make_contract("O:SPY250305P00603000", 603.0, "put"),
+            _make_contract("O:SPY250305P00602500", 602.5, "put"),
         ]
         mock_cm.get_rest_client.return_value.list_options_contracts.return_value = contracts
 
@@ -111,12 +111,14 @@ class TestDiscoverTargeted:
 
         calls = [c for c in result if c["contract_type"] == "call"]
         puts = [c for c in result if c["contract_type"] == "put"]
-        assert len(calls) == 2  # n_calls
-        assert len(puts) == 2   # n_puts
-        # Calls should have lowest strikes above opening
-        assert all(c["strike_price"] > 603.0 for c in calls)
-        # Puts should have highest strikes below opening
-        assert all(p["strike_price"] < 603.0 for p in puts)
+        assert len(calls) == 2
+        assert len(puts) == 2
+        # Calls: immediately above opening
+        assert calls[0]["strike_price"] == pytest.approx(603.5)
+        assert calls[1]["strike_price"] == pytest.approx(604.0)
+        # Puts: at or below opening, nearest first
+        assert puts[0]["strike_price"] == pytest.approx(603.0)
+        assert puts[1]["strike_price"] == pytest.approx(602.5)
 
     def test_empty_result_on_no_contracts(self, config, mock_cm):
         mock_cm.get_rest_client.return_value.list_options_contracts.return_value = []
@@ -125,10 +127,11 @@ class TestDiscoverTargeted:
         assert result == []
 
     def test_tries_multiple_expirations(self, config, mock_cm):
+        # opening=600.0, increment=0.5 → calls [600.5, 601.0], puts [600.0, 599.5]
         rest = mock_cm.get_rest_client.return_value
+        call = _make_contract("O:SPY250305C00600500", 600.5, "call")
+        put = _make_contract("O:SPY250305P00600000", 600.0, "put")
         # First expiry returns nothing, second returns contracts
-        call = _make_contract("O:SPY250305C00605000", 605.0, "call")
-        put = _make_contract("O:SPY250305P00595000", 595.0, "put")
         rest.list_options_contracts.side_effect = [[], [call, put]]
 
         dl = TargetedOptionsDownloader(config, mock_cm)
@@ -188,10 +191,11 @@ class TestRun:
         assert stats["dates_processed"] == 0
 
     def test_processes_with_spy(self, config, mock_cm, tmp_path):
+        # opening=600.0 → calls [600.5, 601.0], puts [600.0, 599.5]
         _make_spy_df(tmp_path, open_price=600.0)
 
-        call = _make_contract("O:SPY250305C00605000", 605.0, "call")
-        put = _make_contract("O:SPY250305P00595000", 595.0, "put")
+        call = _make_contract("O:SPY250305C00600500", 600.5, "call")
+        put = _make_contract("O:SPY250305P00600000", 600.0, "put")
         mock_cm.get_rest_client.return_value.list_options_contracts.return_value = [call, put]
 
         agg = MagicMock()
@@ -225,10 +229,11 @@ class TestRun:
 
     def test_download_minute_error_skips_contract(self, config, mock_cm, tmp_path):
         """A failed minute download for one contract does not abort the date."""
+        # opening=600.0 → calls [600.5, 601.0], puts [600.0, 599.5]
         _make_spy_df(tmp_path, open_price=600.0)
 
-        call = _make_contract("O:SPY250305C00605000", 605.0, "call")
-        put = _make_contract("O:SPY250305P00595000", 595.0, "put")
+        call = _make_contract("O:SPY250305C00600500", 600.5, "call")
+        put = _make_contract("O:SPY250305P00600000", 600.0, "put")
         mock_cm.get_rest_client.return_value.list_options_contracts.return_value = [call, put]
 
         # get_aggs raises on the call contract, succeeds on the put
@@ -251,3 +256,57 @@ class TestRun:
         assert stats["contracts_found"] == 2
         # Only 1 bar written (the put succeeded)
         assert stats["total_bars"] == 1
+
+
+class TestComputeStrikes:
+    """Tests for _compute_strikes() — the core strike price arithmetic."""
+
+    def test_fractional_opening(self, config, mock_cm):
+        """opening=600.25 → calls [600.5, 601.0], puts [600.0, 599.5]"""
+        dl = TargetedOptionsDownloader(config, mock_cm)
+        calls, puts = dl._compute_strikes(600.25)
+        assert calls == pytest.approx([600.5, 601.0])
+        assert puts == pytest.approx([600.0, 599.5])
+
+    def test_exact_boundary_opening(self, config, mock_cm):
+        """opening=600.0 (on a strike boundary) → calls [600.5, 601.0], puts [600.0, 599.5]"""
+        dl = TargetedOptionsDownloader(config, mock_cm)
+        calls, puts = dl._compute_strikes(600.0)
+        assert calls == pytest.approx([600.5, 601.0])
+        assert puts == pytest.approx([600.0, 599.5])
+
+    def test_calls_strictly_above_opening(self, config, mock_cm):
+        """All call strikes must be strictly above opening price."""
+        dl = TargetedOptionsDownloader(config, mock_cm)
+        for opening in [599.75, 600.0, 600.25, 600.5, 601.0]:
+            calls, _ = dl._compute_strikes(opening)
+            assert all(c > opening for c in calls), (
+                f"Call strike not above opening {opening}: {calls}"
+            )
+
+    def test_puts_at_or_below_opening(self, config, mock_cm):
+        """All put strikes must be at or below opening price."""
+        dl = TargetedOptionsDownloader(config, mock_cm)
+        for opening in [599.75, 600.0, 600.25, 600.5, 601.0]:
+            _, puts = dl._compute_strikes(opening)
+            assert all(p <= opening for p in puts), (
+                f"Put strike above opening {opening}: {puts}"
+            )
+
+    def test_strikes_spaced_by_increment(self, config, mock_cm):
+        """Consecutive strikes must be separated by exactly strike_increment."""
+        dl = TargetedOptionsDownloader(config, mock_cm)
+        calls, puts = dl._compute_strikes(600.25)
+        assert calls[1] - calls[0] == pytest.approx(0.5)
+        assert puts[0] - puts[1] == pytest.approx(0.5)
+
+    def test_user_example(self, config, mock_cm):
+        """Explicit example from requirements: opening=600.25 → exact expected strikes."""
+        dl = TargetedOptionsDownloader(config, mock_cm)
+        calls, puts = dl._compute_strikes(600.25)
+        # Calls: 600.5 and 601.0
+        assert calls[0] == pytest.approx(600.5)
+        assert calls[1] == pytest.approx(601.0)
+        # Puts: 600.0 and 599.5
+        assert puts[0] == pytest.approx(600.0)
+        assert puts[1] == pytest.approx(599.5)

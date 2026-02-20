@@ -13,8 +13,8 @@ pipeline_v2:
 
   options:
     n_calls: 2                     # calls with strike immediately > opening
-    n_puts: 2                      # puts with strike immediately < opening
-    discovery_range_pct: 0.05      # ±5% range to query Polygon, then filter to n_calls/n_puts
+    n_puts: 2                      # puts with strike immediately <= opening
+    strike_increment: 0.5          # SPY options strike price increment in dollars
     expiration_search_days: 5      # look for expiry within next 5 calendar days
 
   scanner:

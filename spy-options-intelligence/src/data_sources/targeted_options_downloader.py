@@ -6,10 +6,15 @@
 
 For each trading date:
   1. Read SPY opening price from local Parquet (no API call).
-  2. Query Polygon for options in ±discovery_range_pct strike range.
-  3. Select the 2 calls with lowest strike > opening and
-     the 2 puts with highest strike < opening.
+  2. Compute exact target strikes from the opening price using strike_increment:
+       - Calls: n_calls strikes immediately above opening (e.g. 600.5, 601.0)
+       - Puts:  n_puts strikes immediately at or below opening (e.g. 600.0, 599.5)
+  3. Query Polygon with a tight strike range covering only the target strikes.
   4. Download minute bars for each selected contract.
+
+Example (opening=600.25, strike_increment=0.5):
+  call strikes → [600.5, 601.0]
+  put  strikes → [600.0, 599.5]
 
 Output paths:
   - contracts JSON: data/raw/options/contracts/{date}_contracts.json
@@ -18,9 +23,10 @@ Output paths:
 """
 
 import json
+import math
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from tqdm import tqdm
@@ -37,7 +43,7 @@ class TargetedOptionsDownloader:
     Configuration is read from config["pipeline_v2"]["options"]:
       - n_calls: number of call contracts to select (default 2)
       - n_puts: number of put contracts to select (default 2)
-      - discovery_range_pct: ± fraction for Polygon query (default 0.05)
+      - strike_increment: dollar increment between SPY option strikes (default 0.5)
       - expiration_search_days: days ahead to search for expiration (default 5)
     """
 
@@ -54,7 +60,7 @@ class TargetedOptionsDownloader:
         opts_cfg = v2.get("options", {})
         self.n_calls = opts_cfg.get("n_calls", 2)
         self.n_puts = opts_cfg.get("n_puts", 2)
-        self.discovery_range_pct = opts_cfg.get("discovery_range_pct", 0.05)
+        self.strike_increment = opts_cfg.get("strike_increment", 0.5)
         self.expiration_search_days = opts_cfg.get("expiration_search_days", 5)
 
         parquet_cfg = config.get("sinks", {}).get("parquet", {})
@@ -101,12 +107,17 @@ class TargetedOptionsDownloader:
         return float(df.iloc[0]["open"])
 
     def discover_targeted(self, date: str, opening_price: float) -> List[Dict]:
-        """Discover and select 2 calls + 2 puts for the given date.
+        """Discover exactly n_calls + n_puts contracts for the given date.
 
-        Queries Polygon for contracts within ±discovery_range_pct, then:
-          - Calls: lowest n_calls strikes strictly above opening_price
-          - Puts:  highest n_puts strikes strictly below opening_price
+        Computes target strikes mathematically from the opening price:
+          - Calls: n_calls strikes immediately above opening_price
+          - Puts:  n_puts strikes immediately at or below opening_price
 
+        Example (opening=600.25, strike_increment=0.5):
+          call strikes → [600.5, 601.0]
+          put  strikes → [600.0, 599.5]
+
+        Queries Polygon with a tight range covering only those strikes.
         Tries successive expiration dates (up to expiration_search_days)
         until contracts are found.
 
@@ -117,8 +128,12 @@ class TargetedOptionsDownloader:
         Returns:
             List of up to n_calls+n_puts contract dicts.
         """
-        lower = round(opening_price * (1 - self.discovery_range_pct), 2)
-        upper = round(opening_price * (1 + self.discovery_range_pct), 2)
+        call_strikes, put_strikes = self._compute_strikes(opening_price)
+
+        # Tight query range: just wide enough to cover the target strikes
+        strike_lo = min(put_strikes)
+        strike_hi = max(call_strikes)
+
         date_dt = datetime.strptime(date, "%Y-%m-%d")
 
         contracts: List[Dict] = []
@@ -134,8 +149,8 @@ class TargetedOptionsDownloader:
                     it = rest.list_options_contracts(
                         underlying_ticker="SPY",
                         expiration_date=_expiry,
-                        strike_price_gte=lower,
-                        strike_price_lte=upper,
+                        strike_price_gte=strike_lo,
+                        strike_price_lte=strike_hi,
                         limit=100,
                         sort="ticker",
                         order="asc",
@@ -151,33 +166,38 @@ class TargetedOptionsDownloader:
             if raw:
                 contracts = [self._transform_contract(c) for c in raw]
                 logger.info(
-                    f"[{date}] Found {len(contracts)} contracts for expiry {expiry}"
+                    f"[{date}] Found {len(contracts)} contracts for expiry {expiry} "
+                    f"(call strikes {call_strikes}, put strikes {put_strikes})"
                 )
                 break
 
         if not contracts:
             logger.warning(
-                f"[{date}] No contracts found within ±{self.discovery_range_pct*100:.0f}% "
-                f"of opening={opening_price} after {self.expiration_search_days} days"
+                f"[{date}] No contracts found for call strikes {call_strikes} / "
+                f"put strikes {put_strikes} after {self.expiration_search_days} days"
             )
             return []
 
+        # Select contracts matching the exact computed strikes (tolerance 1 cent)
         calls = sorted(
-            [c for c in contracts if c["contract_type"] == "call"
-             and c["strike_price"] > opening_price],
+            [c for c in contracts
+             if c["contract_type"] == "call"
+             and any(abs(c["strike_price"] - s) < 0.01 for s in call_strikes)],
             key=lambda c: c["strike_price"],
         )
         puts = sorted(
-            [c for c in contracts if c["contract_type"] == "put"
-             and c["strike_price"] < opening_price],
+            [c for c in contracts
+             if c["contract_type"] == "put"
+             and any(abs(c["strike_price"] - s) < 0.01 for s in put_strikes)],
             key=lambda c: -c["strike_price"],
         )
         selected = calls[: self.n_calls] + puts[: self.n_puts]
 
         if len(selected) < self.n_calls + self.n_puts:
             logger.warning(
-                f"[{date}] Only {len(selected)} contracts selected "
-                f"(wanted {self.n_calls} calls + {self.n_puts} puts)"
+                f"[{date}] Only {len(selected)}/{self.n_calls + self.n_puts} target "
+                f"contracts found. Call strikes wanted: {call_strikes}, "
+                f"put strikes wanted: {put_strikes}"
             )
         return selected
 
@@ -338,6 +358,49 @@ class TargetedOptionsDownloader:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _compute_strikes(
+        self, opening_price: float
+    ) -> Tuple[List[float], List[float]]:
+        """Compute exact call and put strike prices from the opening price.
+
+        Uses strike_increment to find:
+          - Call strikes: n_calls multiples of increment strictly above opening
+          - Put strikes:  n_puts multiples of increment at or below opening
+
+        Example (opening=600.25, increment=0.5):
+            call_strikes = [600.5, 601.0]
+            put_strikes  = [600.0, 599.5]
+
+        Example (opening=600.00, increment=0.5):
+            call_strikes = [600.5, 601.0]   ← moves up one step when on boundary
+            put_strikes  = [600.0, 599.5]
+
+        Args:
+            opening_price: SPY opening price.
+
+        Returns:
+            Tuple of (call_strikes, put_strikes), each sorted nearest-first.
+        """
+        inc = self.strike_increment
+
+        # First call strike: lowest multiple of inc strictly above opening
+        call_base = math.ceil(opening_price / inc) * inc
+        if call_base <= opening_price + 1e-9:   # handle exact boundary
+            call_base += inc
+        call_base = round(call_base, 2)
+        call_strikes = [round(call_base + i * inc, 2) for i in range(self.n_calls)]
+
+        # First put strike: highest multiple of inc at or below opening
+        put_base = math.floor(opening_price / inc) * inc
+        put_base = round(put_base, 2)
+        put_strikes = [round(put_base - i * inc, 2) for i in range(self.n_puts)]
+
+        logger.debug(
+            f"Opening {opening_price} → call strikes {call_strikes}, "
+            f"put strikes {put_strikes}"
+        )
+        return call_strikes, put_strikes
 
     def _transform_contract(self, c) -> Dict[str, Any]:
         """Transform a Polygon contract object to a standardized dict."""
