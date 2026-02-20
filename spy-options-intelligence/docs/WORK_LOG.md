@@ -30,8 +30,11 @@ Implementation history for SPY Options Intelligence Platform — Phase 1.
 | 19 | 2026-02-14 | `88a7326` | Feed simulator — replay historical data as real-time stream | 24 |
 | 20 | 2026-02-14 | `9d21cc8` | Integration tests — historical, real-time, and full pipeline flows | 24 |
 | 21 | 2026-02-14 | — | Documentation — README, API reference, example configs, work log | — |
+| 22 | 2026-02-18 | `f065057` | Data purge manager and memory leak fixes — LRU dedup, throughput pruning, vectorized Greeks | 21 |
+| 23 | 2026-02-18 | `12dbc17` | Feature engineering and analysis rebuild — MinuteDownloader, FeatureEngineer, OptionsScanner, Streamlit dashboard | 70 |
+| 24 | 2026-02-19 | `d98f679` | Retry handler refinements — exponential backoff (5xx + 429), auth log+skip, SkippableError | 9 |
 
-**Total**: 543 tests passing + 7 live tests (skipped outside market hours)
+**Total**: 641 tests passing + 7 live tests (skipped outside market hours)
 
 ---
 
@@ -53,6 +56,12 @@ Implementation history for SPY Options Intelligence Platform — Phase 1.
 - Greeks computed per-row as scalars (delta, gamma, theta, vega, rho, IV)
 - `TrainingDataPrep` separated from `Consolidator` — target prices are offline ML prep only
 - `merge_asof` for VIX and news time alignment
+
+### Retry Behaviour (Step 24)
+- All retried errors (5xx + 429) use exponential backoff: `initial_wait * base^(attempt-1)`, capped at `max_wait`
+- Auth failures (401, 403): log WARNING + return `None` immediately — never retry to prevent account lockout
+- `SkippableError`: new exception for data quality issues and schema drift — log WARNING + return `None`, no retry
+- `with_retry` restructured from raw tenacity decorator to an outer wrapper that intercepts these two skip categories
 
 ### Deferred (Step 18)
 - Late data handling deferred to Phase 2 — will use Kafka + Spark watermarking
@@ -77,7 +86,7 @@ Implementation history for SPY Options Intelligence Platform — Phase 1.
 |--------|-------|-----------|
 | Config loader | 15 | YAML merge, env vars, validation |
 | Logger | 14 | Redaction, file rotation, heartbeat |
-| Retry + Connection | 32 | Backoff, jitter, rate limit, 429 handling |
+| Retry + Connection | 41 | Exponential backoff (5xx+429), auth log+skip, SkippableError, jitter, rate limit |
 | Polygon client | 19 | REST fetch, pagination, transform |
 | Parquet sink | 14 | Write, dedup, partition, compression |
 | Validator | 21 | Schema validation, batch split, error messages |
