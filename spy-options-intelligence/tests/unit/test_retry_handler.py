@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from tenacity import RetryError
 
-from src.utils.retry_handler import with_retry, RetryableError, _get_retry_config
+from src.utils.retry_handler import with_retry, RetryableError, SkippableError, _get_retry_config
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ class TestWithRetry:
         assert call_count == 1  # No retry
 
     def test_no_retry_on_403(self, retry_config):
-        """403 Forbidden should not be retried."""
+        """403 Forbidden: log and skip (returns None), never retry — prevents lockout."""
         call_count = 0
 
         @with_retry(source="default", config=retry_config)
@@ -116,10 +116,64 @@ class TestWithRetry:
             call_count += 1
             raise RetryableError("Forbidden", status_code=403)
 
-        with pytest.raises(RetryableError, match="Forbidden"):
+        result = forbidden()
+        assert result is None   # skipped, not re-raised
+        assert call_count == 1  # no retry
+
+    def test_no_retry_on_401(self, retry_config):
+        """401 Unauthorized: log and skip (returns None), never retry — prevents lockout."""
+        call_count = 0
+
+        @with_retry(source="default", config=retry_config)
+        def unauthorized():
+            nonlocal call_count
+            call_count += 1
+            raise RetryableError("Unauthorized", status_code=401)
+
+        result = unauthorized()
+        assert result is None
+        assert call_count == 1
+
+    def test_auth_skip_logs_warning(self, retry_config):
+        """Auth failures are logged at WARNING before skipping."""
+        @with_retry(source="default", config=retry_config)
+        def forbidden():
+            raise RetryableError("Forbidden", status_code=403)
+
+        with patch("src.utils.retry_handler.logger") as mock_logger:
             forbidden()
 
-        assert call_count == 1
+        mock_logger.warning.assert_called_once()
+        log_msg = mock_logger.warning.call_args[0][0]
+        assert "Auth failure" in log_msg
+        assert "403" in log_msg
+
+    def test_skippable_error_returns_none(self, retry_config):
+        """SkippableError (data quality / schema drift) returns None without retry."""
+        call_count = 0
+
+        @with_retry(source="default", config=retry_config)
+        def bad_record():
+            nonlocal call_count
+            call_count += 1
+            raise SkippableError("Unexpected null in 'close' field")
+
+        result = bad_record()
+        assert result is None
+        assert call_count == 1  # no retry
+
+    def test_skippable_error_logs_warning(self, retry_config):
+        """SkippableError is logged at WARNING before skipping."""
+        @with_retry(source="default", config=retry_config)
+        def schema_drift():
+            raise SkippableError("Unexpected field 'new_column'")
+
+        with patch("src.utils.retry_handler.logger") as mock_logger:
+            schema_drift()
+
+        mock_logger.warning.assert_called_once()
+        log_msg = mock_logger.warning.call_args[0][0]
+        assert "data quality" in log_msg or "schema drift" in log_msg
 
     def test_max_attempts_exceeded(self, retry_config):
         call_count = 0
@@ -185,6 +239,33 @@ class TestWithRetry:
         log_msg = mock_logger.warning.call_args[0][0]
         assert "Retry attempt" in log_msg
 
+    def test_exponential_backoff_grows_with_attempts(self, retry_config):
+        """Both 5xx and 429 use exponential backoff — delay grows with each attempt."""
+        from src.utils.retry_handler import _make_wait_strategy, RetryableError
+        from unittest.mock import MagicMock
+
+        strategy = _make_wait_strategy(
+            initial_wait=1.0, exp_base=2, max_wait=30.0, jitter=False
+        )
+
+        def make_state(status_code, attempt):
+            exc = RetryableError("err", status_code=status_code)
+            outcome = MagicMock()
+            outcome.exception.return_value = exc
+            state = MagicMock()
+            state.outcome = outcome
+            state.attempt_number = attempt
+            return state
+
+        for status_code in (500, 502, 503, 504, 429):
+            wait_1 = strategy(make_state(status_code, attempt=1))  # 1.0 * 2^0 = 1.0s
+            wait_2 = strategy(make_state(status_code, attempt=2))  # 1.0 * 2^1 = 2.0s
+            wait_3 = strategy(make_state(status_code, attempt=3))  # 1.0 * 2^2 = 4.0s
+            assert wait_1 == 1.0
+            assert wait_2 == 2.0
+            assert wait_3 == 4.0
+            assert wait_1 < wait_2 < wait_3  # escalates each attempt
+
 
 class TestGetRetryConfig:
     """Tests for config resolution logic."""
@@ -213,3 +294,16 @@ class TestRetryableError:
     def test_default_status_code(self):
         err = RetryableError("test")
         assert err.status_code == 0
+
+
+class TestSkippableError:
+    """Tests for the SkippableError exception."""
+
+    def test_is_exception(self):
+        err = SkippableError("bad record")
+        assert isinstance(err, Exception)
+        assert str(err) == "bad record"
+
+    def test_not_retryable_error(self):
+        err = SkippableError("schema drift")
+        assert not isinstance(err, RetryableError)
