@@ -383,6 +383,13 @@ class OptionsForwardScanner:
 
         combined = pd.concat(dfs, ignore_index=True)
 
+        # Deduplicate in case overlapping report files exist (e.g. a March-only
+        # file and a full-year file that both cover the same dates).
+        dedup_keys = [k for k in ["date", "ticker", "entry_time_et", "trigger_time_et"]
+                      if k in combined.columns]
+        if dedup_keys:
+            combined = combined.drop_duplicates(subset=dedup_keys)
+
         if start_date and "date" in combined.columns:
             combined = combined[combined["date"] >= start_date]
         if end_date and "date" in combined.columns:

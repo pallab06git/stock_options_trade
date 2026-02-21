@@ -63,6 +63,13 @@ def _load_forward(start: str, end: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.concat(dfs, ignore_index=True)
+
+    # Deduplicate in case overlapping report files exist
+    dedup_keys = [k for k in ["date", "ticker", "entry_time_et", "trigger_time_et"]
+                  if k in df.columns]
+    if dedup_keys:
+        df = df.drop_duplicates(subset=dedup_keys)
+
     if "date" in df.columns:
         df = df[(df["date"] >= start) & (df["date"] <= end)]
 
