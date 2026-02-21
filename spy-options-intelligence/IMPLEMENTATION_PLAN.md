@@ -777,6 +777,28 @@
   - TestTorchNotAvailable ×3: _require_torch, LSTMModel, LSTMTrainer all raise ImportError
 - [x] Full test suite: 1285 passing, 35 skipped (LSTM tests skip when torch absent)
 
+## Step 48: ML Comparison Streamlit Dashboard ✅
+- [x] Create `src/ml/dashboard.py`
+  - Launch: `streamlit run src/ml/dashboard.py -- --results-dir data/reports/model_comparison`
+  - `--results-dir` CLI arg (default: `data/reports/model_comparison`)
+  - `_load_results_dir(results_dir)` — reads all `*_results.json`; converts string keys back to float thresholds; `@st.cache_data`
+  - `_load_comparison_csv(results_dir)` — reads `model_comparison.csv`; `@st.cache_data`
+  - `_load_overlap_json(results_dir, threshold)` — reads `overlap_{t:.2f}.json`; `@st.cache_data`
+  - `_get_results_dir()` — parses `--results-dir` / `--results_dir` from `sys.argv`
+  - Sidebar: shows results directory, file count, per-file list; "Refresh data" button clears cache; plotly warning if absent
+  - **Tab 1 — Model Comparison**: comparison table (from CSV) + net-profit line chart + win-rate line chart (all models, all thresholds)
+  - **Tab 2 — Threshold Sweep**: single-model selector; metrics table; signal count bar chart; net-profit bar chart (green/red); calls vs puts stacked bar
+  - **Tab 3 — Signal Overlap**: threshold selector; 4 KPI metrics (unique signals, models compared, all agree, majority agree); agreement breakdown bar chart; all-agree detail table
+  - **Tab 4 — Trade Explorer**: model + threshold selectors; 4 KPI metrics; outcome/exit-reason/contract-type filters; sorted trade table; P&L distribution histogram
+  - Graceful degradation: charts replaced with DataFrames when plotly absent; clear ImportError when streamlit absent
+- [x] Unit tests: 25 tests in `tests/unit/test_ml_dashboard.py`
+  - TestLoadResultsDir ×8: model names, float keys, threshold values, required keys, missing dir, empty dir, corrupt JSON, model count
+  - TestLoadComparisonCsv ×5: returns DataFrame, not empty, Model column, missing dir, missing CSV
+  - TestLoadOverlapJson ×5: returns dict, expected keys, model count, missing threshold, missing dir
+  - TestGetResultsDir ×4: default, --results-dir flag, --results_dir variant, flag without value
+  - TestDashboardConstants ×3: Path type, colour format (#rrggbb), threshold coverage
+- [x] Full test suite: 1310 passing, 35 skipped
+
 ## Future
 - [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
 - [ ] VIX data integration (upgrade massive.com plan)
