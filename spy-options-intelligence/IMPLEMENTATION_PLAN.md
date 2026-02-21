@@ -589,6 +589,87 @@
     → confirms held-out test performance is more modest than training period
   - Key insight: use 'ml backtest --threshold' for real held-out evaluation
 
+## Step 42: Signal Explainability (SHAP) ✅
+- [x] Create `src/ml/explainer.py` — `SignalExplainer` class
+  - `__init__(model, feature_names)` — initialises `shap.TreeExplainer(model)`
+  - `from_artifact(artifact)` — classmethod, constructs from joblib artifact dict
+  - `explain_signal(features, prediction_proba, threshold=0.90)` → str
+    - Builds ordered feature array; calls `shap_explainer.shap_values()` for SHAP values
+    - Sorts impacts by abs(SHAP) descending; takes top 10
+    - Calls `_interpret_feature` and `_format_explanation`
+  - `_interpret_feature(name, value, impact)` → str
+    - Plain-English sentences for all 66 model features (option returns, SPY technicals,
+      volume, IV, moneyness, time features, contract type, DTE)
+    - Generic fallback `"{name} = {value:.4g}"` for unknown features
+  - `_format_explanation(confidence, threshold, top_impacts, features)` → str
+    - Header: "🎯 SIGNAL DETECTED" + "CAUTION: Near Threshold" when margin < 2%
+    - Confidence, threshold, and margin display with "⚠️ CLOSE CALL" warning
+    - Numbered top-10 factors with 🔴 strength dots (1–5 scaled by abs(SHAP) × 20),
+      BULLISH/BEARISH labels, and human-readable interpretation
+    - "⚠️ RISK FACTORS" section for negative-SHAP features in top 10
+    - "💡 RECOMMENDATION: Proceed with caution" when ≥2 risk factors
+- [x] Add `explain-signal` CLI command to `src/ml/cli.py`
+  - `--model-path` (required), `--features-file` (required)
+  - `--ticker` (filter to specific option), `--row-index` (specific row)
+  - `--threshold` (override artifact threshold)
+  - Default: selects row with highest predicted probability; prints row index + confidence
+- [x] Add `shap>=0.50.0` to `requirements.txt`
+- [x] Unit tests: 60 tests
+  - TestSignalExplainerConstruction ×5: init, from_artifact, missing shap ImportError
+  - TestExplainSignal ×15: return type, confidence/threshold display, top-10 limit,
+    margin, CLOSE CALL, risk factors, missing features fallback to 0, SHAP call,
+    CAUTION header, RECOMMENDATION with ≥2 risk factors
+  - TestInterpretFeature ×26: option returns, SPY RSI/MACD/EMA, volume/zscore/regime,
+    IV (high/low/change), time (hour/morning/last-hour), moneyness (ATM/ITM/OTM),
+    contract type, 0DTE, unknown fallback, all 66 model features return non-empty strings
+  - TestFormatExplanation ×14: string type, header, confidence/threshold/margin,
+    feature names, risk factors, caution, BULLISH/BEARISH, 🔴 dots, interpretation text
+- [x] Full test suite: 1269 passing + 7 skipped
+
+## Step 43: Walk-Forward Validation ✅
+- [x] Create `src/ml/walk_forward_validator.py` — `WalkForwardValidator` class
+  - `__init__(features_dir, xgb_params=None, train_window_months=3, test_window_months=1)`
+    - Defaults to xgboost_v2 params (n_estimators=300, max_depth=6, lr=0.05, etc.)
+  - `get_date_splits()` → List[Tuple[str,str,str,str]]
+    - Uses calendar-month boundaries + `relativedelta`; 1-month slide (overlapping train windows)
+    - Full 12-month dataset (Mar 2025–Feb 2026) → 8 splits (Split 9 excluded: Feb window > data end)
+  - `load_date_range(start_date, end_date)` → pd.DataFrame
+    - Delegates to `load_features()` from train_xgboost.py for consistent filtering
+  - `evaluate_split(train_start, train_end, test_start, test_end, threshold)` → Dict
+    - 80/20 chronological split within training window for early-stopping validation
+    - Undersamples majority class in training portion only (`undersample_majority`)
+    - Computes: precision, recall, total_signals, TP, FP, FN, TN, signal_rate
+    - Computes: tp_avg_gain_pct, fp_avg_loss_pct, expected_value_pct
+    - Returns "INSUFFICIENT_DATA" if train/test empty or <10 positives in training
+  - `run_validation(threshold=0.67)` → Dict
+    - Aggregates: precision_mean/median/std/min/max, signals_mean/median/min/max, ev_mean/median/std
+    - Returns "NO_SPLITS", "ALL_SPLITS_FAILED", or "SUCCESS"
+  - `plot_results(summary)` → str (ASCII bar chart of precision per test month)
+- [x] Add `walk-forward` CLI command to `src/ml/cli.py`
+  - `--threshold` (0.67), `--train-months` (3), `--test-months` (1), `--output`
+  - Prints split preview table, per-split results table, ASCII bar chart, summary stats, interpretation
+  - Saves `data/reports/walk_forward/walk_forward_results.json`
+- [x] Unit tests: 36 tests
+  - TestGetDateSplits ×8: empty dir, single date, 9 splits, 4-element tuples, non-overlapping tests,
+    overlapping train windows, train_end < test_start, custom window sizes
+  - TestLoadDateRange ×3: delegates to load_features, passes dates, empty result
+  - TestGetFeatureCols ×3: excludes non-features, includes features, sorted
+  - TestEvaluateSplit ×7: empty train, empty test, few positives, required keys, precision in range,
+    TP+FP=signals, test_month label
+  - TestRunValidation ×5: no splits, all failed, precision stats present, precision mean correct, splits list
+  - TestPlotResults ×6: returns string, test months, bar chars, precision %, no-splits placeholder, header
+  - TestDefaultXgbParams ×4: required keys, n_estimators=300, min_positives>=5, custom override
+- [x] Full test suite: 1305 passing + 7 skipped
+- [x] Live validation results (xgboost_v2 params, threshold=0.67, 3-month train, 1-month test):
+  - 8 splits executed: Jun–Aug–Sep–Oct–Nov–Dec 2025, Jan 2026
+  - **Precision mean: 55.8% | median: 61.8% | std: 36.2%** (0.0% – 100.0%)
+  - **Key insight**: The 91.9% full-year backtest is an OUTLIER (+36.1% above walk-forward mean)
+  - **Root cause**: Model trained on 3 months generalizes poorly; it needs 6+ months of training data
+  - **High variance** (std=36.2%) confirms model is unstable across market regimes
+  - Splits with most signals (Sep/Oct/Dec) show 56–69% precision — consistent with theory
+  - Splits with few signals (Jan: 2 signals, Jun: 0) are not statistically meaningful
+  - **Verdict**: Weak POC at 3-month rolling window; full-year training is more reliable approach
+
 ## Future
 - [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
 - [ ] VIX data integration (upgrade massive.com plan)
@@ -597,4 +678,4 @@
 - [ ] MLflow integration
 
 ---
-**Total tests: 1209 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-20**
+**Total tests: 1305 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-20**

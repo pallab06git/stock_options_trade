@@ -984,3 +984,342 @@ def threshold_analysis(
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# explain-signal
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("explain-signal")
+@click.option(
+    "--model-path",
+    required=True,
+    help="Path to the .pkl model artifact (e.g. models/xgboost_v2.pkl).",
+)
+@click.option(
+    "--features-file",
+    required=True,
+    help="Path to a features CSV file (one of the data/processed/features/*.csv files).",
+)
+@click.option(
+    "--ticker",
+    default=None,
+    help="Filter to a specific option ticker (e.g. O:SPY250321C00580000). "
+    "If omitted, the row with the highest model probability is selected.",
+)
+@click.option(
+    "--row-index",
+    default=None,
+    type=int,
+    help="Explain a specific 0-based row index instead of highest probability.",
+)
+@click.option(
+    "--threshold",
+    default=None,
+    type=float,
+    help="Override the model artifact's decision threshold for the explanation "
+    "header (0.0–1.0). Defaults to threshold stored in the artifact.",
+)
+def explain_signal(model_path, features_file, ticker, row_index, threshold):
+    """Explain why the model fired (or would fire) a buy signal.
+
+    Loads a features CSV, selects the row with the highest model confidence
+    (or a specific --ticker / --row-index), computes SHAP values, and prints
+    a detailed explanation showing:
+
+    \\b
+    - Top 10 contributing features with SHAP values
+    - Human-readable interpretation of each feature
+    - Risk factors (features pushing toward no-signal)
+    - Confidence vs threshold margin
+    """
+    try:
+        import joblib
+        import numpy as np
+        import pandas as pd
+
+        from src.ml.explainer import SignalExplainer
+
+        # ── Load model artifact ───────────────────────────────────────────
+        artifact = joblib.load(model_path)
+        model = artifact["model"]
+        feature_cols = artifact["feature_cols"]
+        model_threshold = float(artifact.get("threshold", 0.90))
+        effective_threshold = threshold if threshold is not None else model_threshold
+
+        # ── Load features ─────────────────────────────────────────────────
+        df = pd.read_csv(features_file)
+        if df.empty:
+            raise ValueError(f"Features file is empty: {features_file}")
+
+        # Apply ticker filter
+        if ticker is not None:
+            mask = df.get("ticker", pd.Series(dtype=str)) == ticker
+            if not mask.any():
+                raise ValueError(f"Ticker '{ticker}' not found in {features_file}")
+            df = df[mask].reset_index(drop=True)
+
+        # Select row
+        if row_index is not None:
+            if row_index >= len(df) or row_index < 0:
+                raise ValueError(
+                    f"--row-index {row_index} out of range (0–{len(df) - 1})"
+                )
+            chosen_df = df.iloc[[row_index]]
+        else:
+            # Select row with highest predicted probability
+            X_all = df[feature_cols].fillna(0).values.astype(np.float32)
+            probas = model.predict_proba(X_all)[:, 1]
+            best_idx = int(np.argmax(probas))
+            chosen_df = df.iloc[[best_idx]]
+            click.echo(
+                f"Selected row {best_idx} with highest confidence "
+                f"({probas[best_idx]:.1%}) from {len(df)} rows."
+            )
+
+        row = chosen_df.iloc[0]
+        features_dict = {
+            col: float(row[col]) for col in feature_cols if col in row.index
+        }
+
+        # Predict probability for chosen row
+        X_row = np.array(
+            [features_dict.get(c, 0.0) for c in feature_cols], dtype=np.float32
+        )
+        pred_proba = float(model.predict_proba([X_row])[0][1])
+
+        # Contextual header
+        ticker_label = str(row.get("ticker", "unknown"))
+        date_label = str(row.get("date", "unknown"))
+        time_label = (
+            f"{int(row.get('hour_et', 0)):02d}:{int(row.get('minute_et', 0)):02d} ET"
+            if "hour_et" in row.index
+            else ""
+        )
+
+        click.echo(f"\nFile:       {features_file}")
+        click.echo(f"Ticker:     {ticker_label}")
+        click.echo(f"Date/Time:  {date_label}  {time_label}")
+        click.echo(f"Model:      {model_path}")
+        click.echo("")
+
+        # ── Build explainer and explain ───────────────────────────────────
+        explainer = SignalExplainer(model, feature_cols)
+        explanation = explainer.explain_signal(
+            features=features_dict,
+            prediction_proba=pred_proba,
+            threshold=effective_threshold,
+        )
+        click.echo(explanation)
+
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# walk-forward
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("walk-forward")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--threshold",
+    default=0.67,
+    type=float,
+    show_default=True,
+    help="Probability threshold applied to every test split (default: 0.67, same as backtest).",
+)
+@click.option(
+    "--train-months",
+    default=3,
+    type=int,
+    show_default=True,
+    help="Training window size in calendar months.",
+)
+@click.option(
+    "--test-months",
+    default=1,
+    type=int,
+    show_default=True,
+    help="Test window size in calendar months.  Also the slide step.",
+)
+@click.option(
+    "--output",
+    default=None,
+    help="Directory to save the JSON results (default: data/reports/walk_forward).",
+)
+def walk_forward(config_dir, threshold, train_months, test_months, output):
+    """Walk-forward validation to assess model stability across time.
+
+    Re-trains XGBoost from scratch on each rolling window and evaluates on
+    the following unseen month.  Shows whether the 91.9% backtest precision
+    is typical or an outlier across different market regimes.
+
+    \\b
+    Split scheme (default: 3-month train, 1-month test):
+      Split 1: Train [Mar Apr May] → Test [Jun]
+      Split 2: Train [Apr May Jun] → Test [Jul]
+      ...
+      Split 9: Train [Nov Dec Jan] → Test [Feb]
+
+    NOTE: each fold re-trains a fresh model — results are slower than
+    'ml backtest' but give a true out-of-sample estimate for every month.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from src.ml.walk_forward_validator import WalkForwardValidator
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        features_dir = config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output) if output else _Path("data/reports/walk_forward")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        click.echo(f"\n--- Walk-Forward Validation ---")
+        click.echo(f"Features dir:   {features_dir}")
+        click.echo(f"Threshold:      {threshold:.2f}")
+        click.echo(f"Train window:   {train_months} month(s)")
+        click.echo(f"Test window:    {test_months} month(s)")
+        click.echo(
+            "NOTE: re-trains XGBoost for each split — this may take several minutes\n"
+        )
+
+        validator = WalkForwardValidator(
+            features_dir=features_dir,
+            train_window_months=train_months,
+            test_window_months=test_months,
+        )
+
+        # Show date splits preview
+        splits = validator.get_date_splits()
+        click.echo(f"Generated {len(splits)} train-test split(s):")
+        for i, (ts, te, vs, ve) in enumerate(splits, 1):
+            click.echo(f"  Split {i:2d}: Train {ts} → {te}  |  Test {vs} → {ve}")
+        click.echo("")
+
+        summary = validator.run_validation(threshold=threshold)
+
+        if summary["status"] != "SUCCESS":
+            click.echo(f"Validation failed: {summary.get('message', summary['status'])}")
+            for r in summary.get("splits", []):
+                if r["status"] != "SUCCESS":
+                    click.echo(
+                        f"  Split {r.get('split_index','?')}: {r['status']} — {r.get('reason','')}"
+                    )
+            sys.exit(1)
+
+        # ── Per-split results table ────────────────────────────────────
+        click.echo("--- Per-Split Results ---")
+        click.echo(
+            f"{'Split':>6}  {'Test Period':>22}  {'Signals':>8}  {'Prec':>7}  "
+            f"{'TP':>5}  {'FP':>5}  {'EV%':>7}"
+        )
+        click.echo("  " + "-" * 70)
+        for r in summary["splits"]:
+            idx = r.get("split_index", "?")
+            if r["status"] == "SUCCESS":
+                click.echo(
+                    f"  {idx:>4}  {r['test_period']:>22}  "
+                    f"{r['total_signals']:>8}  {r['precision']:>6.1%}  "
+                    f"{r['true_positives']:>5}  {r['false_positives']:>5}  "
+                    f"{r['expected_value_pct']:>+7.1f}"
+                )
+            else:
+                click.echo(
+                    f"  {idx:>4}  {r['test_period']:>22}  "
+                    f"{'[SKIP]':>8}  {'n/a':>7}  {'--':>5}  {'--':>5}  {'n/a':>7}"
+                    f"  ({r.get('reason','')})"
+                )
+
+        # ── ASCII bar chart ────────────────────────────────────────────
+        click.echo("")
+        click.echo(validator.plot_results(summary))
+
+        # ── Summary statistics ─────────────────────────────────────────
+        click.echo("--- Summary Statistics ---")
+        click.echo(f"Splits evaluated:  {summary['successful_splits']} / {summary['total_splits']}")
+        click.echo(f"Threshold:         {summary['threshold']:.2f}")
+        click.echo("")
+        click.echo("Precision across test months:")
+        click.echo(f"  Mean:    {summary['precision_mean']:.1%}")
+        click.echo(f"  Median:  {summary['precision_median']:.1%}")
+        click.echo(f"  Std dev: {summary['precision_std']:.1%}")
+        click.echo(f"  Range:   {summary['precision_min']:.1%} – {summary['precision_max']:.1%}")
+        click.echo("")
+        click.echo("Signals per test month:")
+        click.echo(f"  Mean:    {summary['signals_mean']:.0f}")
+        click.echo(f"  Median:  {summary['signals_median']:.0f}")
+        click.echo(f"  Range:   {summary['signals_min']} – {summary['signals_max']}")
+        click.echo("")
+        click.echo("Expected value per trade (%):")
+        click.echo(f"  Mean:    {summary['ev_mean']:+.2f}%")
+        click.echo(f"  Median:  {summary['ev_median']:+.2f}%")
+        click.echo(f"  Std dev: {summary['ev_std']:.2f}%")
+
+        # ── Interpretation ─────────────────────────────────────────────
+        click.echo("")
+        click.echo("--- Interpretation ---")
+
+        mean_p = summary["precision_mean"]
+        if mean_p >= 0.93:
+            click.echo("Strong POC: model consistently achieves >93% precision")
+            click.echo("  → Ready for production with minor tuning")
+        elif mean_p >= 0.90:
+            click.echo("Adequate POC: model averages 90–93% precision")
+            click.echo("  → Consider improvements (feature engineering, LSTM, ensemble)")
+        else:
+            click.echo("Weak POC: model averages <90% precision")
+            click.echo("  → Significant improvements needed")
+
+        click.echo("")
+        std_p = summary["precision_std"]
+        if std_p < 0.03:
+            click.echo(f"Stability: GOOD (std={std_p:.1%}) — very consistent across time")
+        elif std_p < 0.06:
+            click.echo(f"Stability: MODERATE (std={std_p:.1%}) — acceptable variance")
+        else:
+            click.echo(f"Stability: POOR (std={std_p:.1%}) — high month-to-month variance")
+
+        # Compare against the existing backtest result
+        click.echo("")
+        backtest_prec = 0.919
+        diff = backtest_prec - mean_p
+        if abs(diff) < 0.02:
+            click.echo(
+                f"Existing backtest (91.9%) vs walk-forward mean ({mean_p:.1%}): "
+                "consistent — backtest is representative"
+            )
+        elif diff > 0:
+            click.echo(
+                f"Existing backtest (91.9%) is {diff:.1%} above walk-forward mean "
+                f"({mean_p:.1%}) — backtest period was slightly favorable"
+            )
+        else:
+            click.echo(
+                f"Existing backtest (91.9%) is {-diff:.1%} below walk-forward mean "
+                f"({mean_p:.1%}) — model may perform better on average"
+            )
+
+        # ── Save results ───────────────────────────────────────────────
+        out_path = out_dir / "walk_forward_results.json"
+        with open(out_path, "w") as fh:
+            _json.dump(summary, fh, indent=2, default=str)
+        click.echo(f"\nResults saved to: {out_path}")
+
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
