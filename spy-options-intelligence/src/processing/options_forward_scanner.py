@@ -207,6 +207,14 @@ class OptionsForwardScanner:
                 f"max={int(all_counts.max())}"
             )
 
+            # Derive option type (C / P) from ticker symbol
+            # Ticker format: O:SPY250318C00560000 — C or P follows the 6-digit date
+            import re as _re
+            def _opt_type(ticker: str) -> str:
+                m = _re.search(r"\d([CP])\d", ticker)
+                return m.group(1) if m else "?"
+            df_ev["option_type"] = df_ev["ticker"].apply(_opt_type)
+
             # Positive-minute stats (same definition as backtest)
             total_pos_mins = int(df_ev["above_20pct_duration_min"].sum())
             pos_rate = total_pos_mins / t_bars * 100.0 if t_bars > 0 else 0.0
@@ -215,6 +223,24 @@ class OptionsForwardScanner:
             print(f"Total >20% minutes:       {total_pos_mins:,}")
             print(f"Positive-minute rate:     {pos_rate:.2f}%")
             print(f"Duration >20% (med/mean): {med_dur:.1f} / {mean_dur:.1f} min")
+
+            # Call / Put breakdown
+            print(f"\nBy option type:")
+            for otype, label in [("C", "Calls"), ("P", "Puts")]:
+                grp = df_ev[df_ev["option_type"] == otype]
+                if grp.empty:
+                    print(f"  {label:<6} 0 events")
+                    continue
+                g_n    = len(grp)
+                g_mins = int(grp["above_20pct_duration_min"].sum())
+                g_rate = g_mins / t_bars * 100.0 if t_bars > 0 else 0.0
+                g_med  = grp["above_20pct_duration_min"].median()
+                g_mean = grp["above_20pct_duration_min"].mean()
+                print(
+                    f"  {label:<6} {g_n:4d} events  |  "
+                    f"{g_rate:.2f}% pos-min rate  |  "
+                    f"dur >20% med {g_med:.1f} / mean {g_mean:.1f} min"
+                )
 
             # Hour distribution of trigger times (when 20% threshold was first hit)
             df_ev["_trigger_hour"] = pd.to_numeric(

@@ -48,6 +48,7 @@ _HARDWARE_DIR = _REPORTS_DIR / "hardware"
 
 def _load_forward(start: str, end: str) -> pd.DataFrame:
     """Load forward-scan CSVs filtered to the given date range."""
+    import re
     if not _FORWARD_DIR.exists():
         return pd.DataFrame()
 
@@ -64,6 +65,14 @@ def _load_forward(start: str, end: str) -> pd.DataFrame:
     df = pd.concat(dfs, ignore_index=True)
     if "date" in df.columns:
         df = df[(df["date"] >= start) & (df["date"] <= end)]
+
+    # Derive option type (C = Call, P = Put) from ticker
+    if "ticker" in df.columns:
+        def _opt_type(ticker: str) -> str:
+            m = re.search(r"\d([CP])\d", str(ticker))
+            return "Call" if m and m.group(1) == "C" else "Put" if m else "?"
+        df["option_type"] = df["ticker"].apply(_opt_type)
+
     return df.reset_index(drop=True)
 
 
@@ -117,15 +126,30 @@ def _tab_options_movement() -> None:
         st.error("Start date must be before end date.")
         return
 
-    df = _load_forward(str(start), str(end))
+    df_all = _load_forward(str(start), str(end))
 
-    if df.empty:
+    if df_all.empty:
         st.info("No forward scan reports found for the selected range. Run `scan-options-forward` first.")
         return
 
-    st.subheader(f"{len(df)} qualifying entries  |  {df['date'].nunique() if 'date' in df.columns else 0} days")
+    # Option type filter
+    otype_filter = st.radio(
+        "Option type",
+        options=["All", "Calls", "Puts"],
+        horizontal=True,
+        key="mv_otype",
+    )
+    if otype_filter == "Calls" and "option_type" in df_all.columns:
+        df = df_all[df_all["option_type"] == "Call"].reset_index(drop=True)
+    elif otype_filter == "Puts" and "option_type" in df_all.columns:
+        df = df_all[df_all["option_type"] == "Put"].reset_index(drop=True)
+    else:
+        df = df_all
 
-    # Summary metrics
+    n_days = df["date"].nunique() if "date" in df.columns else 0
+    st.subheader(f"{len(df)} qualifying entries  |  {n_days} days")
+
+    # Summary metrics — overall + call/put split
     c1, c2, c3, c4 = st.columns(4)
     if "minutes_to_trigger" in df.columns:
         c1.metric("Median mins to trigger", f"{df['minutes_to_trigger'].median():.0f} min")
@@ -136,32 +160,83 @@ def _tab_options_movement() -> None:
     if "above_10pct_duration_min" in df.columns:
         c4.metric("Median ≥10% duration", f"{df['above_10pct_duration_min'].median():.0f} min")
 
+    # Call vs Put split metrics (only shown in All view)
+    if otype_filter == "All" and "option_type" in df.columns:
+        st.divider()
+        st.markdown("**Calls vs Puts breakdown**")
+        cc1, cc2 = st.columns(2)
+        for col, otype, label in [(cc1, "Call", "Calls"), (cc2, "Put", "Puts")]:
+            grp = df[df["option_type"] == otype]
+            with col:
+                st.markdown(f"**{label}** — {len(grp):,} events")
+                sub1, sub2, sub3 = st.columns(3)
+                if "minutes_to_trigger" in grp.columns and not grp.empty:
+                    sub1.metric("Mins to trigger", f"{grp['minutes_to_trigger'].median():.0f}")
+                if "gain_pct" in grp.columns and not grp.empty:
+                    sub2.metric("Gain at trigger", f"{grp['gain_pct'].median():.1f}%")
+                if "above_20pct_duration_min" in grp.columns and not grp.empty:
+                    sub3.metric("≥20% duration", f"{grp['above_20pct_duration_min'].median():.0f} min")
+        st.divider()
+
     # Events table
     st.subheader("Events")
     st.dataframe(df, use_container_width=True)
 
-    # Bar chart: events per day
+    # Bar chart: events per day split by call/put
     if "date" in df.columns:
         st.subheader("Events per Day")
-        daily = df.groupby("date").size().reset_index(name="count")
-        st.bar_chart(daily.set_index("date")["count"])
+        import altair as alt
+        if otype_filter == "All" and "option_type" in df.columns:
+            daily = df.groupby(["date", "option_type"]).size().reset_index(name="count")
+            chart = (
+                alt.Chart(daily)
+                .mark_bar()
+                .encode(
+                    alt.X("date:O", title="Date"),
+                    alt.Y("count:Q", title="Events"),
+                    alt.Color("option_type:N", scale=alt.Scale(
+                        domain=["Call", "Put"], range=["#4C9BE8", "#E8714C"]
+                    )),
+                    alt.Order("option_type:N"),
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            daily = df.groupby("date").size().reset_index(name="count")
+            st.bar_chart(daily.set_index("date")["count"])
 
-    # Histogram: gain_pct distribution
+    # Histogram: gain_pct distribution by call/put
     if "gain_pct" in df.columns and not df["gain_pct"].isna().all():
         st.subheader("Gain % Distribution")
         import altair as alt
-
-        hist_df = df[["gain_pct"]].dropna()
-        chart = (
-            alt.Chart(hist_df)
-            .mark_bar()
-            .encode(
-                alt.X("gain_pct:Q", bin=alt.Bin(maxbins=30), title="Gain %"),
-                alt.Y("count():Q", title="Events"),
+        if otype_filter == "All" and "option_type" in df.columns:
+            hist_df = df[["gain_pct", "option_type"]].dropna()
+            chart = (
+                alt.Chart(hist_df)
+                .mark_bar(opacity=0.7)
+                .encode(
+                    alt.X("gain_pct:Q", bin=alt.Bin(maxbins=30), title="Gain %"),
+                    alt.Y("count():Q", title="Events", stack=None),
+                    alt.Color("option_type:N", scale=alt.Scale(
+                        domain=["Call", "Put"], range=["#4C9BE8", "#E8714C"]
+                    )),
+                )
+                .properties(height=300)
             )
-            .properties(height=300)
-        )
-        st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            hist_df = df[["gain_pct"]].dropna()
+            chart = (
+                alt.Chart(hist_df)
+                .mark_bar()
+                .encode(
+                    alt.X("gain_pct:Q", bin=alt.Bin(maxbins=30), title="Gain %"),
+                    alt.Y("count():Q", title="Events"),
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(chart, use_container_width=True)
 
 
 def _tab_space_utilization() -> None:
