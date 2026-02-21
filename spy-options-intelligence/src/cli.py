@@ -36,6 +36,11 @@ def cli():
     pass
 
 
+# Register ML subgroup (generate-features, train, feature-importance, backtest)
+from src.ml.cli import ml_cli  # noqa: E402
+cli.add_command(ml_cli)
+
+
 @cli.command()
 @click.option(
     "--config-dir",

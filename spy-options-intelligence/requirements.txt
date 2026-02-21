@@ -57,6 +57,11 @@ py_vollib>=1.0.3               # Black-Scholes Greeks and implied volatility
 ta>=0.11.0                     # Technical indicators (RSI, MACD, Bollinger)
 scipy>=1.11.0                  # Numerical methods (required by py_vollib)
 
+# ML Training
+xgboost>=2.0.0                 # Gradient boosting classifier (installed: 3.2.0)
+scikit-learn>=1.3.0            # Metrics: precision, recall, f1, roc_auc (installed: 1.8.0)
+joblib>=1.3.0                  # Model artifact serialisation (installed: 1.5.3)
+
 # Utilities
 python-dateutil>=2.8.2
 pytz>=2023.3

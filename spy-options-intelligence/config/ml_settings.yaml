@@ -1,0 +1,112 @@
+# ML pipeline configuration
+# Used by: MLFeatureEngineer, LabelGenerator, DataSplitter, DataBalancer,
+#           XGBoostTrainer, FeatureImportanceAnalyzer, ModelBacktester, ML CLI
+
+# ---------------------------------------------------------------------------
+# Feature Engineering  (src/processing/ml_feature_engineer.py)
+# ---------------------------------------------------------------------------
+feature_engineering:
+  # Date range for feature generation (override via CLI --start-date / --end-date)
+  start_date: "2025-03-03"
+  end_date:   "2026-02-19"
+
+  # Input / output paths
+  spy_data_dir:     "data/raw/spy/minute"
+  options_data_dir: "data/raw/options/minute"
+  features_dir:     "data/processed/features"
+
+  # Target label definition
+  target_threshold_pct:       20.0   # minimum % gain to label a bar as positive (target=1)
+  target_lookforward_minutes: 120    # forward window in minutes to search for the move
+
+  # Rolling lookback windows used for momentum and volatility features (minutes)
+  lookback_windows_minutes: [1, 5, 15, 30, 60]
+
+  # Options pricing constants (used for Black-Scholes IV via py_vollib)
+  risk_free_rate:  0.045   # annualised risk-free rate
+  dividend_yield:  0.015   # SPY dividend yield approximation
+
+# ---------------------------------------------------------------------------
+# Label Generator  (src/processing/label_generator.py)
+# ---------------------------------------------------------------------------
+label_generator:
+  threshold_pct:       20.0   # same as feature_engineering.target_threshold_pct
+  lookforward_minutes: 120    # same as feature_engineering.target_lookforward_minutes
+
+# ---------------------------------------------------------------------------
+# Data Preparation  (DataSplitter + DataBalancer)
+# ---------------------------------------------------------------------------
+data_preparation:
+  # Chronological train / val / test split ratios (must sum to < 1.0)
+  # test_ratio is inferred: 1 - train_ratio - val_ratio
+  train_ratio: 0.70
+  val_ratio:   0.15
+  # test_ratio: 0.15  (inferred)
+
+  # Class-imbalance strategy: "undersample" | "class_weights"
+  # "undersample"    — downsample majority class to match minority (used for training)
+  # "class_weights"  — keep all rows; pass weights to model (alternative strategy)
+  balance_method: "undersample"
+
+  # Column name of the binary target label
+  target_col: "target"
+
+  # Random seed for reproducible sampling in DataBalancer and DataSplitter
+  random_state: 42
+
+# ---------------------------------------------------------------------------
+# ML Training  (XGBoostTrainer, FeatureImportanceAnalyzer, ModelBacktester)
+# ---------------------------------------------------------------------------
+ml_training:
+
+  # --- XGBoost hyper-parameters ---
+  xgboost:
+    # Tree ensemble
+    n_estimators:          300    # maximum number of boosting rounds
+    max_depth:               6    # maximum tree depth (controls overfitting)
+    min_child_weight:        5    # minimum sum of instance weight in a child
+    gamma:                0.10    # minimum loss reduction for a split
+
+    # Stochastic subsampling (regularisation)
+    subsample:            0.80    # fraction of training rows per tree
+    colsample_bytree:     0.80    # fraction of features per tree
+
+    # Learning rate
+    learning_rate:        0.05    # shrinkage applied to each tree's contribution
+
+    # Early stopping (monitors eval_metric on validation set)
+    early_stopping_rounds:  20    # stop if no improvement for this many rounds
+    eval_metric:      "logloss"   # optimisation metric (logloss | auc | error)
+
+    # Inference
+    threshold:            0.50    # probability cutoff for binary classification
+
+    # Reproducibility
+    random_state:           42
+
+    # Model versioning (used in artifact file name: models/xgboost_{version}.pkl)
+    model_version:        "v1"
+
+  # --- Feature Importance ---
+  feature_importance:
+    # Importance measure: weight | gain | cover | total_gain | total_cover
+    # "gain" (avg loss reduction per split) is the most informative default.
+    importance_type: "gain"
+
+    # Number of features shown in reports and ASCII bar charts
+    top_n: 20
+
+    # Where CSV importance reports are written
+    output_dir: "data/reports/feature_importance"
+
+  # --- Backtesting ---
+  backtest:
+    # Where trades CSV and JSON metrics reports are written
+    output_dir: "data/reports/backtest"
+
+# ---------------------------------------------------------------------------
+# Output paths  (shared across ML modules)
+# ---------------------------------------------------------------------------
+ml_paths:
+  models_dir:        "models"               # trained model artifacts (.pkl)
+  training_logs_dir: "data/logs/training"   # per-run training metrics (JSON)

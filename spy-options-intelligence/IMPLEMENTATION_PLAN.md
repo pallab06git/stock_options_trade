@@ -321,14 +321,179 @@
   - Event peak hours: 09:xx–10:xx (morning) and 15:xx (gamma into close)
 - [x] Architectural insight documented: per-day interleaved SPY+options download needed (options only requires SPY open price, not full day; rate-limit wait window should be used for parallel options fetch)
 
+## Step 29: ML Feature Engineering ✅
+- [x] Create `src/processing/ml_feature_engineer.py` (MLFeatureEngineer class)
+  - 66 engineered features across 13 groups (time, SPY momentum/volume/volatility/
+    technicals/Bollinger/VWAP, options momentum/intraday, contract, IV, cross-asset)
+  - RSI-14, EMA-9/21, MACD(12/26/9), Bollinger Bands via `ta` library
+  - Implied volatility via `py_vollib` Black-Scholes (fallback 0.20 if unavailable)
+  - Forward-looking binary target: did price rise ≥20% in next 120 min?
+  - Label metadata: max_gain_120m, time_to_max_min
+  - Output: `data/processed/features/{date}_features.csv` (81 cols)
+  - Config-driven (feature_engineering.* keys; all params have defaults)
+- [x] Unit tests: 36 tests (TestInit, TestComputeSpyFeatures, TestComputeTargets,
+  TestParseContractMeta, TestEngineerDate, TestRun)
+- [x] Smoke test on 2025-03-03: 764 rows × 81 cols, 2 contracts, 58% positive rate
+
+## Step 30: Label Generator ✅
+- [x] Create `src/processing/label_generator.py`
+  - Module-level `generate_labels(df, threshold_pct=20.0, lookforward_minutes=120)`
+    - Works on any DataFrame with `timestamp` + `close` columns
+    - Per-ticker label isolation (groupby if `ticker` col present)
+    - Adds: `target` (int8), `max_gain_pct` (float), `time_to_max_min` (float)
+    - O(n log n) via numpy searchsorted; original df not mutated
+  - `LabelGenerator` class (config-driven wrapper)
+    - `generate(df)` — apply with configured params
+    - `generate_for_file(path)` — load CSV/Parquet, apply, return (overwrites stale target)
+    - `validate(df)` — check distribution, coverage, missing columns
+- [x] Unit tests: 29 tests (TestValidateInput, TestSingleTicker, TestMultiTicker, TestClass)
+
+## Step 31: Data Balancing ✅
+- [x] Create `src/ml/__init__.py` (new ML sub-package)
+- [x] Create `src/ml/data_balancer.py`
+  - `undersample_majority(df, target_col, random_state)` — downsample majority to match minority;
+    reproducible via random_state; handles empty/single-class/already-balanced edge cases
+  - `calculate_class_weights(df, target_col)` — balanced weights formula
+    (n_total / (n_classes × count_i)); equivalent to sklearn's compute_class_weight('balanced')
+  - `DataBalancer` class (config-driven wrapper)
+    - `balance(df)` — applies "undersample" or returns unchanged for "class_weights"
+    - `get_class_weights(df)` — compute weights dict
+    - `get_summary(df)` — distribution stats, imbalance_ratio, class_weights
+- [x] Unit tests: 31 tests (TestCheckTargetCol, TestUndersampleMajority,
+  TestCalculateClassWeights, TestDataBalancer)
+- [x] No new dependencies added (pure numpy/pandas; equivalent to sklearn's balanced formula)
+
+## Step 32: Train/Test Split Utility ✅
+- [x] Create `src/ml/data_splitter.py`
+  - `time_based_split(df, train_ratio=0.70, val_ratio=0.15)` → (train, val, test)
+    - Date-level split when `date` column present (whole trading days kept together)
+    - Row-level fallback when no `date` column (splits on sorted timestamps)
+    - Strict chronological order: train < val < test, no overlap between sets
+  - `DataSplitter` class (config-driven wrapper)
+    - `split(df)` → delegates to time_based_split with configured ratios
+    - `split_dates(dates)` → partition a date list for pre-loading planning
+    - `test_ratio` property (derived: 1 − train − val)
+    - `get_summary(train, val, test)` → row counts, date ranges, positive rates
+  - `_validate_ratios` — raises ValueError for zero/exceeding ratios
+- [x] Unit tests: 34 tests (TestValidateRatios, TestDateLevel, TestRowLevel,
+  TestDataSplitter, TestSplitDates, TestGetSummary)
+- [x] Key design: date-level split prevents intraday bars from spanning sets;
+  no random shuffling anywhere — pure chronological ordering
+
+## Step 33: XGBoost Training Pipeline ✅
+- [x] Create `src/ml/train_xgboost.py`
+  - `load_features(features_dir, start_date, end_date)` — load + concat `*_features.csv` files;
+    filters by date range; sorts by timestamp; warns on missing files
+  - `_NON_FEATURE_COLS` frozenset — excludes raw OHLCV, metadata, and all label columns
+    from model input (open/high/low/close/volume/vwap/transactions, opt_close, date, ticker,
+    timestamp, source, target, max_gain_120m, max_gain_pct, time_to_max_min)
+  - `XGBoostTrainer` class (config-driven, reads `ml_training.xgboost.*`)
+    - `train(features_dir, start_date, end_date, models_dir, logs_dir)` — full pipeline:
+        load → split (chronological, FIRST) → balance training only (undersample) →
+        fit XGBClassifier with early stopping → evaluate on val → save artifact → log metrics
+    - `get_feature_cols(df)` — returns sorted list of model input columns
+    - `_evaluate(model, X, y, threshold)` → {accuracy, precision, recall, f1, roc_auc}
+    - `_save_model(artifact, version, models_dir)` — joblib.dump dict artifact to
+        `models/xgboost_{version}.pkl`; artifact keys: model, feature_cols, threshold,
+        xgb_params, saved_at
+    - `_log_metrics(metrics, run_ts, logs_dir)` — JSON to `data/logs/training/training_{ts}.json`
+  - XGBoost 3.x API: `early_stopping_rounds` in constructor (not fit()); no use_label_encoder
+  - Default XGBoost params: n_estimators=300, max_depth=6, lr=0.05, subsample=0.80,
+    colsample_bytree=0.80, min_child_weight=5, gamma=0.10
+- [x] Unit tests: 35 tests (TestLoadFeatures, TestNonFeatureCols, TestXGBoostTrainerInit,
+  TestGetFeatureCols, TestXGBoostTrainerTrain, TestEvaluate)
+- [x] Full test suite: 974 passing + 7 skipped
+
+## Step 34: Feature Importance Analyzer ✅
+- [x] Create `src/ml/feature_importance.py`
+  - `_VALID_IMPORTANCE_TYPES` frozenset: weight, gain, cover, total_gain, total_cover
+  - `extract_importances(model, feature_cols, importance_type="gain")` → DataFrame
+    - Maps f0/f1/… internal XGBoost names → real feature_cols via index
+    - Features not used in any split included with importance=0.0
+    - Columns: feature, importance, importance_pct (normalized), rank
+    - Sorted by importance DESC; rank starts at 1
+  - `FeatureImportanceAnalyzer` class (reads `ml_training.feature_importance.*`)
+    - `analyze(model_path, output_dir)` — load joblib artifact → extract → save CSV → return df
+    - `get_top_n(df, n)` — top-N slice with reset index
+    - `save_report(df, model_version, output_dir)` — CSV to `{version}_{type}_importance.csv`
+    - `plot_summary(df, top_n)` — ASCII horizontal bar chart, no external dependencies
+- [x] Unit tests: 45 tests (TestExtractImportances, TestValidImportanceTypes,
+  TestFeatureImportanceAnalyzerInit, TestGetTopN, TestSaveReport, TestAnalyze, TestPlotSummary)
+- [x] Full test suite: 1019 passing + 7 skipped
+
+## Step 35: ML Model Backtester ✅
+- [x] Create `src/ml/backtest.py`
+  - `backtest_model(model, feature_cols, df, threshold)` → (metrics_dict, trades_df)
+    - Validates: non-empty df, target column present, all feature_cols in df
+    - Predicts proba on X_test → binary y_pred via threshold
+    - Builds per-trade DataFrame for predicted-positive bars (meta cols + outcome)
+    - `is_true_positive` flag; carries date/ticker/timestamp/max_gain_120m/time_to_max_min
+  - `_compute_metrics(y_true, y_pred, probas, df)` → dict
+    - n_test_rows, n_signals, n_true_positives, n_false_positives, signal_rate,
+      positive_rate_test, precision, recall, f1, roc_auc
+    - avg_gain_all_bars (baseline), avg_gain_signals, avg_gain_tp, avg_gain_fp
+    - lift = avg_gain_signals / avg_gain_all_bars (None when max_gain_120m absent)
+  - `ModelBacktester` class (config-driven, reads `ml_training.backtest.*`)
+    - `run(model_path, features_dir, start_date, end_date, output_dir)` →
+        load artifact → load features → chronological split → take test set only →
+        backtest_model → save trades CSV + JSON metrics report → return result dict
+    - Output: `{model_version}_trades_{ts}.csv`, `{model_version}_backtest_{ts}.json`
+  - Design: test set only (never training data); lift > 1 = model adds value over random
+- [x] Unit tests: 38 tests (TestBacktestModel, TestComputeMetrics,
+  TestBuildTradesDf, TestModelBacktester)
+- [x] Full test suite: 1057 passing + 7 skipped
+
+## Step 36: requirements.txt — ML Dependencies ✅
+- [x] Added `# ML Training` section to `requirements.txt`:
+  - `xgboost>=2.0.0`     (XGBoost gradient boosting; installed 3.2.0)
+  - `scikit-learn>=1.3.0` (precision/recall/f1/roc_auc metrics; installed 1.8.0)
+  - `joblib>=1.3.0`       (model artifact serialisation; installed 1.5.3)
+- [x] Full test suite: 1057 passing + 7 skipped (no regressions)
+
+## Step 37: config/ml_settings.yaml ✅
+- [x] Created `config/ml_settings.yaml` — single config file for all ML modules
+  - `feature_engineering.*` — start/end dates, input/output paths, target definition
+    (threshold_pct=20, lookforward=120), lookback windows, risk_free_rate, dividend_yield
+  - `label_generator.*` — threshold_pct, lookforward_minutes (mirrors feature_engineering)
+  - `data_preparation.*` — train_ratio=0.70, val_ratio=0.15, balance_method=undersample,
+    target_col=target, random_state=42
+  - `ml_training.xgboost.*` — all 11 XGBoost params + threshold + model_version
+  - `ml_training.feature_importance.*` — importance_type=gain, top_n=20, output_dir
+  - `ml_training.backtest.*` — output_dir
+  - `ml_paths.*` — models_dir, training_logs_dir (shared across modules)
+- [x] Verified: all 28 config keys read by ML modules resolve cleanly via yaml.safe_load
+
+## Step 38: ML CLI Runner ✅
+- [x] Create `src/ml/cli.py` — `ml` Click subgroup with 4 commands
+  - `generate-features` (`--config-dir, --start-date, --end-date`)
+    → `MLFeatureEngineer.run()`; prints 7-line summary (dates processed/skipped/failed,
+      total rows, n_features, positive rate, output dir)
+  - `train` (`--config-dir, --start-date, --end-date, --model-version`)
+    → `XGBoostTrainer.train()`; prints 11-line training summary
+      (row counts, n_features, best_iteration, val accuracy/precision/recall/f1/ROC-AUC,
+      model path, metrics log path)
+  - `feature-importance` (`--config-dir, --model-path [required], --importance-type, --top-n`)
+    → `FeatureImportanceAnalyzer.analyze()` + `plot_summary()`; prints ASCII bar chart
+  - `backtest` (`--config-dir, --model-path [required], --start-date, --end-date`)
+    → `ModelBacktester.run()`; prints 13-line backtest summary
+      (test rows, signals, TP/FP, precision/recall/f1/ROC-AUC, avg gain, lift, file paths)
+  - All heavy ML imports deferred inside each command body (fast CLI startup)
+  - All commands: non-zero exit on exception; error message to stderr via `click.echo(err=True)`
+- [x] Register `ml_cli` in `src/cli.py` via `cli.add_command(ml_cli)` — accessible as `ml` subgroup
+- [x] Unit tests: 31 tests (TestGroupHelp ×6, TestGenerateFeatures ×5, TestTrain ×5,
+  TestFeatureImportance ×6, TestBacktest ×7, TestMainCliIntegration ×2)
+  - Deferred-import patch targets corrected: source module paths not `src.ml.cli.*`
+    (e.g. `src.processing.ml_feature_engineer.MLFeatureEngineer`,
+     `src.ml.train_xgboost.XGBoostTrainer`, `src.ml.feature_importance.FeatureImportanceAnalyzer`,
+     `src.ml.backtest.ModelBacktester`)
+- [x] Full test suite: 1088 passing + 7 skipped
+
 ## Future
 - [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
 - [ ] VIX data integration (upgrade massive.com plan)
 - [ ] Per-day interleaved `download-day` command (SPY open → options, parallel within rate-limit window)
 - [ ] LSTM model training
-- [ ] Signal validator implementation
 - [ ] MLflow integration
-- [ ] Backtesting framework
 
 ---
-**Total tests: 774 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-20**
+**Total tests: 939 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-20**
