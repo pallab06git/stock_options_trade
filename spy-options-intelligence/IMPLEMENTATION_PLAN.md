@@ -723,6 +723,60 @@
   - Call/put breakdown: roughly even (1,419 calls / 1,456 puts across all months)
   - Note: Simulation uses label-based exits (max_gain_120m/min_loss_120m) — approximates real P&L without tick-level data
 
+## Step 45: Hyperparameter Optimization — Optuna Bayesian Search ✅
+- [x] Create `src/ml/hyperparameter_optimizer.py`
+  - `HyperparameterOptimizer(model_class, param_space, X_train, y_train, optimization_metric='precision', n_trials=100, cv_splits=5, min_signals_per_fold=3, model_extra_params=None, predict_threshold=0.5, random_state=42)`
+    - `_sample_params(trial)` — list → suggest_categorical, (int,int) → suggest_int, (float,float) → suggest_float
+    - `objective(trial)` — TimeSeriesSplit CV; returns 0.0 if signals < min_signals_per_fold per fold
+    - `optimize()` → Dict: best_params, best_score, model_class, optimization_metric, n_trials, optimization_history
+    - `save_results(output_path)` — JSON dump
+  - `LSTMHyperparameterOptimizer` — lazy torch import; imports LSTMModel inside objective()
+  - `make_sequences(X, y, seq_len)` — sliding-window helper → (X_seq, y_seq)
+  - Predefined param spaces: `XGBOOST_PARAM_SPACE`, `LIGHTGBM_PARAM_SPACE`, `RF_PARAM_SPACE`, `LSTM_PARAM_SPACE`
+  - Graceful optuna handling: `_OPTUNA_AVAILABLE` flag
+
+## Step 46: Multi-Model Comparison Framework ✅
+- [x] Create `src/ml/model_comparator.py`
+  - `ModelComparator(position_size_usd=12500, target_gain_pct=30, stop_loss_pct=-12, fee_per_trade_usd=4, monthly_profit_target=10000)`
+    - `add_model(name, model, feature_cols, best_params, optimization_score, model_type)` — registers model
+    - `evaluate_at_thresholds(model_name, test_df, thresholds)` → Dict[threshold → result_dict]
+      - Derives feature_cols from `_NON_FEATURE_COLS` if not provided
+      - Calls `TradeSimulator.simulate_period()` for each threshold
+      - Returns: threshold, total_signals, calls/puts, win_rate, win stats (min/median/mean/max), loss stats, gross/net profit, fees, trades list
+    - `find_signal_overlap(model_results, threshold=0.80)` → Dict
+      - Key: (contract_symbol, entry_time) — both needed to uniquely identify a trade
+      - Returns: total_unique_signals, all_models_agree, majority_agree, overlap_breakdown, detailed_overlaps
+    - `generate_comparison_report(comparison_threshold=0.80)` → pd.DataFrame
+      - Columns: Model, Opt Score, Signals (80%), Win Rate, Calls%, Puts%, Avg Win $, Avg Loss $, Net Profit, Meets Target
+    - `get_best_threshold_per_model()` → Dict[model → {best_threshold, net_profit_usd, signals, win_rate}]
+    - `save_results(output_dir)` — per-model JSON + model_comparison.csv + overlap_{t}.json at each default threshold
+  - `DEFAULT_THRESHOLDS = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95]`
+
+## Step 47: PyTorch LSTM Model ✅
+- [x] Create `src/ml/lstm_model.py`
+  - `OptionsSequenceDataset(X, y, seq_len=20)`
+    - Pure-numpy: no PyTorch dependency for instantiation
+    - `_make_sequences(X, y, seq_len)` static method — returns (X_seq shape (n-seq_len, seq_len, n_features), y_seq shape (n-seq_len,))
+    - `__len__()` / `__getitem__()` for compatibility
+    - Raises `ValueError` if len(X) <= seq_len
+  - `LSTMModel(input_size, hidden_size=128, num_layers=2, dropout=0.3)`
+    - Wraps `_LSTMModule(nn.Module)` — stacked LSTM + FC classifier
+    - `build()` → nn.Module; `module` property auto-builds on first access
+    - Single-layer LSTM: dropout disabled on recurrent connections
+  - `LSTMTrainer(input_size, hidden_size=128, num_layers=2, dropout=0.3, seq_len=20, lr=1e-3, epochs=50, batch_size=64, patience=10, pos_weight_factor=10.0, device=None)`
+    - `fit(X, y)` → self: 80/20 chronological train/val split; BCEWithLogitsLoss with pos_weight; early stopping; restores best weights
+    - `predict_proba(X)` → ndarray(n,): pads first seq_len rows with 0.5 for index alignment
+    - `predict_proba_2d(X)` → ndarray(n, 2): sklearn-compatible two-column output
+  - Graceful torch handling: `_TORCH_AVAILABLE` flag; `_require_torch()` raises clear ImportError
+  - `_LSTMModule` and `_TensorDataset` conditionally defined only when torch is available
+- [x] Unit tests: 35 tests in `tests/unit/test_lstm_model.py` (skipped gracefully when torch absent)
+  - TestOptionsSequenceDataset ×8: lengths, shapes, dtypes, label/window alignment, error, getitem, static empty
+  - TestLSTMModelBuild ×6: build(), module property, forward shape, dropout, linear output
+  - TestLSTMTrainerFit ×8: returns self, module set, losses recorded, short data error, early stopping, val losses, all-positive, all-negative
+  - TestLSTMTrainerPredictProba ×10: length, padding, range, dtype, short input, 2D shape, 2D sums, col1 match, raises before fit, batch consistency
+  - TestTorchNotAvailable ×3: _require_torch, LSTMModel, LSTMTrainer all raise ImportError
+- [x] Full test suite: 1285 passing, 35 skipped (LSTM tests skip when torch absent)
+
 ## Future
 - [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
 - [ ] VIX data integration (upgrade massive.com plan)
