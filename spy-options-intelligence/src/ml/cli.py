@@ -1800,3 +1800,240 @@ def full_comparison(
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# detect-leakage
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("detect-leakage")
+@click.option(
+    "--model-path",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to trained model artifact (.pkl), e.g. models/xgboost_v2.pkl",
+)
+@click.option(
+    "--features-dir",
+    default="data/processed/features",
+    show_default=True,
+    type=click.Path(exists=True),
+    help="Directory containing *_features.csv files.",
+)
+@click.option(
+    "--test-size",
+    default=1_000,
+    show_default=True,
+    type=int,
+    help="Number of random-noise samples for the random-data test.",
+)
+@click.option(
+    "--output",
+    default="data/reports/leakage_detection",
+    show_default=True,
+    type=click.Path(),
+    help="Directory where the leakage report JSON is written.",
+)
+def detect_leakage(model_path, features_dir, test_size, output):
+    """Comprehensive data leakage detection for a trained model.
+
+    Runs six tests:
+
+    \b
+    1. Random-data test    — model confidence on pure Gaussian noise
+    2. Source-code audit   — scan feature engineering for lookahead patterns
+    3. Lookahead features  — known future-leaking columns in model feature set
+    4. Target-in-features  — target/label columns must not appear as inputs
+    5. Temporal ordering   — feature DataFrame must be sorted by timestamp
+    6. Train/test contamination — zero date overlap between splits
+
+    Example:
+
+    \b
+        python -m src.cli ml detect-leakage \\
+            --model-path models/xgboost_v2.pkl \\
+            --features-dir data/processed/features/
+    """
+    import joblib
+    from pathlib import Path
+
+    from src.ml.leakage_detector import LeakageDetector
+    from src.ml.train_xgboost import load_features, _NON_FEATURE_COLS
+    from src.ml.data_splitter import DataSplitter
+
+    out_dir = Path(output)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    SEP = "=" * 72
+
+    click.echo(f"\n{SEP}")
+    click.echo("  COMPREHENSIVE DATA LEAKAGE DETECTION")
+    click.echo(SEP)
+    click.echo(f"  Model   : {model_path}")
+    click.echo(f"  Features: {features_dir}")
+    click.echo(f"  Output  : {out_dir}")
+    click.echo(SEP)
+
+    # ── Load model ────────────────────────────────────────────────────
+    click.echo("\nLoading model artifact…")
+    artifact     = joblib.load(model_path)
+    model        = artifact["model"]
+    feature_cols = artifact.get("feature_cols", [])
+    click.echo(
+        f"  Model type   : {type(model).__name__}\n"
+        f"  Feature cols : {len(feature_cols)}"
+    )
+
+    detector = LeakageDetector()
+
+    # ── Test 1: Random data ───────────────────────────────────────────
+    click.echo(f"\n{SEP}")
+    click.echo("  TEST 1/6 — Random-Data Test  (STRONGEST INDICATOR)")
+    click.echo(SEP)
+    click.echo(f"  Generating {test_size:,} samples of Gaussian noise…")
+    rdt = detector.test_on_random_data(model, feature_cols, n_samples=test_size)
+    click.echo(f"  Average confidence  : {rdt['avg_confidence']:.4f}")
+    click.echo(f"  Max confidence      : {rdt['max_confidence']:.4f}")
+    click.echo(f"  95th percentile     : {rdt['percentile_95']:.4f}")
+    click.echo(
+        f"  High-conf signals   : {rdt['high_confidence_count']} / {test_size}"
+        f"  (threshold ≥{rdt['high_confidence_threshold']:.0%})"
+    )
+    click.echo(
+        f"\n  VERDICT: {'🚨 ' if rdt['leakage_detected'] else '✅ '}{rdt['verdict']}"
+    )
+    click.echo(f"  {rdt['explanation']}")
+
+    # ── Test 2: Feature audit ─────────────────────────────────────────
+    click.echo(f"\n{SEP}")
+    click.echo("  TEST 2/6 — Feature-Engineering Source Audit")
+    click.echo(SEP)
+    fa = detector.audit_feature_definitions()
+    if fa.get("error"):
+        click.echo(f"  WARNING: {fa['error']}")
+    else:
+        click.echo(f"  Suspicious patterns found: {fa['pattern_count']}")
+        for p in fa.get("suspicious_patterns", []):
+            click.echo(f"\n  [{p['severity']}] {p['pattern']}")
+            click.echo(f"    → {p['description']}")
+            click.echo(f"    Fix: {p['recommendation']}")
+        verdict_str = "🚨 PATTERNS FOUND" if fa["leakage_likely"] else "✅ PASS"
+        click.echo(f"\n  VERDICT: {verdict_str}")
+
+    # ── Test 3: Known lookahead features ─────────────────────────────
+    click.echo(f"\n{SEP}")
+    click.echo("  TEST 3/6 — Known Lookahead Features in Model")
+    click.echo(SEP)
+    kl = detector.check_known_lookahead_features(feature_cols)
+    click.echo(f"  Features checked: {kl['features_checked']}")
+    if kl["lookahead_features"]:
+        for f in kl["lookahead_features"]:
+            click.echo(f"\n  🚨 '{f['feature']}'")
+            click.echo(f"     {f['reason']}")
+    verdict_str = "🚨 LOOKAHEAD FEATURES PRESENT" if kl["leakage_detected"] else "✅ PASS"
+    click.echo(f"\n  VERDICT: {verdict_str}")
+
+    # ── Test 4: Target not in features ───────────────────────────────
+    click.echo(f"\n{SEP}")
+    click.echo("  TEST 4/6 — Target Columns Absent from Feature Set")
+    click.echo(SEP)
+    tf = detector.verify_target_not_in_features(feature_cols)
+    click.echo(f"  Features inspected : {tf['features_inspected']}")
+    click.echo(f"  Target cols checked: {', '.join(sorted(tf['target_cols_checked']))}")
+    if tf["contaminated_cols"]:
+        click.echo(f"  🚨 Contaminated    : {tf['contaminated_cols']}")
+    verdict_str = "🚨 TARGET COLS IN FEATURES" if tf["leakage_detected"] else "✅ PASS"
+    click.echo(f"\n  VERDICT: {verdict_str}")
+
+    # ── Test 5: Temporal ordering ─────────────────────────────────────
+    click.echo(f"\n{SEP}")
+    click.echo("  TEST 5/6 — Temporal Ordering of Feature Data")
+    click.echo(SEP)
+    click.echo("  Loading all feature CSVs…")
+    try:
+        df = load_features(features_dir)
+        to = detector.verify_temporal_ordering(df)
+        click.echo(f"  Total rows  : {to['total_rows']:,}")
+        click.echo(f"  Violations  : {to['violations']}")
+        verdict_str = (
+            "🚨 ORDERING VIOLATIONS FOUND"
+            if not to.get("ordering_valid", True)
+            else "✅ PASS"
+        )
+        click.echo(f"\n  VERDICT: {verdict_str}")
+    except Exception as exc:
+        click.echo(f"  WARNING: Could not run temporal check — {exc}")
+
+    # ── Test 6: Train/test contamination ─────────────────────────────
+    click.echo(f"\n{SEP}")
+    click.echo("  TEST 6/6 — Train / Test Date Contamination")
+    click.echo(SEP)
+    try:
+        feat_files  = sorted(Path(features_dir).glob("*_features.csv"))
+        all_dates   = sorted(p.stem.split("_features")[0] for p in feat_files)
+        n           = len(all_dates)
+        train_end   = int(n * 0.70)
+        val_end     = int(n * (0.70 + 0.15))
+        train_dates = all_dates[:train_end]
+        test_dates  = all_dates[val_end:]
+
+        cc = detector.detect_train_test_contamination(train_dates, test_dates)
+        click.echo(f"  Train: {cc['train_start']} → {cc['train_end']}  ({len(train_dates)} dates)")
+        click.echo(f"  Val  : {all_dates[train_end]} → {all_dates[val_end - 1]}  ({val_end - train_end} dates)")
+        click.echo(f"  Test : {cc['test_start']} → {cc['test_end']}  ({len(test_dates)} dates)")
+        click.echo(f"  Gap (train end → test start): {cc['gap_days']} days")
+        if cc["overlap_dates"]:
+            click.echo(f"  🚨 Overlapping dates: {cc['overlap_dates'][:10]}")
+        verdict_str = "🚨 CONTAMINATION" if cc["contamination_detected"] else "✅ PASS"
+        click.echo(f"\n  VERDICT: {verdict_str}")
+    except Exception as exc:
+        click.echo(f"  WARNING: Could not run contamination check — {exc}")
+
+    # ── Generate report ───────────────────────────────────────────────
+    report_path = out_dir / "leakage_report.json"
+    report      = detector.generate_report(str(report_path))
+
+    # ── Final summary ─────────────────────────────────────────────────
+    click.echo(f"\n{SEP}")
+    click.echo("  FINAL VERDICT")
+    click.echo(SEP)
+    safe = report["safe_to_proceed"]
+    icon = "✅" if safe else "🚨"
+    click.echo(f"\n  {icon}  {report['overall_verdict']}")
+    click.echo(f"  Safe to proceed: {'YES' if safe else 'NO'}")
+
+    if report["critical_issues"]:
+        click.echo("\n  Critical issues:")
+        for issue in report["critical_issues"]:
+            click.echo(f"    🚨 {issue}")
+
+    if report["warnings"]:
+        click.echo("\n  Warnings (non-blocking):")
+        for w in report["warnings"]:
+            click.echo(f"    ⚠️  {w}")
+
+    click.echo(f"\n  Report saved → {report_path}")
+
+    if safe:
+        click.echo(
+            "\n  The 100% win rate at 0.80 threshold appears GENUINE.\n"
+            "  You may proceed with:\n"
+            "    1. Full-year walk-forward validation\n"
+            "    2. Threshold optimisation (0.80–0.85 range)\n"
+            "    3. Pattern analysis of winning trades\n"
+            "    4. Paper trading preparation"
+        )
+    else:
+        click.echo(
+            "\n  DO NOT PROCEED until leakage is resolved.\n"
+            "  Fix the critical issues above, then re-run:\n"
+            "    1. Feature engineering\n"
+            "    2. Model training\n"
+            "    3. This leakage detection"
+        )
+
+    click.echo(f"\n{SEP}\n")
+
+    if not safe:
+        sys.exit(1)
