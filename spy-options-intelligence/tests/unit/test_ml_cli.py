@@ -547,3 +547,378 @@ class TestMainCliIntegration:
         for cmd in ("generate-features", "train", "feature-importance", "backtest"):
             result = _runner().invoke(cli, ["ml", cmd, "--help"])
             assert result.exit_code == 0, f"ml {cmd} --help failed: {result.output}"
+
+    def test_full_comparison_accessible_from_main_cli(self):
+        from src.cli import cli
+
+        result = _runner().invoke(cli, ["ml", "full-comparison", "--help"])
+        assert result.exit_code == 0
+        assert "--model-path" in result.output
+
+
+# ---------------------------------------------------------------------------
+# TestFullComparison
+# ---------------------------------------------------------------------------
+
+
+def _build_mock_artifact(feature_cols=None):
+    """Return a fake joblib artifact dict."""
+    import numpy as np
+
+    if feature_cols is None:
+        feature_cols = ["feat_a", "feat_b", "feat_c"]
+
+    mock_model = MagicMock()
+    mock_model.predict_proba.return_value = np.array([[0.3, 0.7], [0.8, 0.2]])
+    mock_model.feature_importances_ = np.array([0.5, 0.3, 0.2])
+
+    return {
+        "model": mock_model,
+        "feature_cols": feature_cols,
+        "params": {"n_estimators": 100},
+        "optimization_score": 0.91,
+        "model_type": "xgboost",
+    }
+
+
+def _build_mock_test_df(feature_cols=None, n_rows=10):
+    """Return a minimal feature DataFrame compatible with ModelComparator."""
+    import numpy as np
+    import pandas as pd
+
+    if feature_cols is None:
+        feature_cols = ["feat_a", "feat_b", "feat_c"]
+
+    data = {col: np.random.randn(n_rows) for col in feature_cols}
+    data.update(
+        {
+            "date": ["2026-01-02"] * n_rows,
+            "ticker": ["O:SPY260102C00500000"] * n_rows,
+            "close": np.random.uniform(1.0, 5.0, n_rows),
+            "max_gain_120m": np.random.uniform(0.0, 0.5, n_rows),
+            "min_loss_120m": np.random.uniform(-0.3, 0.0, n_rows),
+            "target": np.random.randint(0, 2, n_rows),
+        }
+    )
+    return pd.DataFrame(data)
+
+
+class TestFullComparisonHelp:
+    """Help text and argument validation tests (no real IO)."""
+
+    def test_help_exits_zero(self):
+        result = _runner().invoke(ml_cli, ["full-comparison", "--help"])
+        assert result.exit_code == 0
+
+    def test_help_shows_model_path_option(self):
+        result = _runner().invoke(ml_cli, ["full-comparison", "--help"])
+        assert "--model-path" in result.output
+
+    def test_help_shows_test_start_date(self):
+        result = _runner().invoke(ml_cli, ["full-comparison", "--help"])
+        assert "--test-start-date" in result.output
+
+    def test_help_shows_test_end_date(self):
+        result = _runner().invoke(ml_cli, ["full-comparison", "--help"])
+        assert "--test-end-date" in result.output
+
+    def test_help_shows_thresholds(self):
+        result = _runner().invoke(ml_cli, ["full-comparison", "--help"])
+        assert "--thresholds" in result.output
+
+    def test_help_shows_output(self):
+        result = _runner().invoke(ml_cli, ["full-comparison", "--help"])
+        assert "--output" in result.output
+
+    def test_missing_model_path_fails(self):
+        result = _runner().invoke(
+            ml_cli,
+            [
+                "full-comparison",
+                "--test-start-date", "2026-01-01",
+                "--test-end-date", "2026-01-31",
+            ],
+        )
+        assert result.exit_code != 0
+
+    def test_missing_test_start_date_fails(self):
+        result = _runner().invoke(
+            ml_cli,
+            [
+                "full-comparison",
+                "--model-path", "xgb=models/xgb.pkl",
+                "--test-end-date", "2026-01-31",
+            ],
+        )
+        assert result.exit_code != 0
+
+    def test_missing_test_end_date_fails(self):
+        result = _runner().invoke(
+            ml_cli,
+            [
+                "full-comparison",
+                "--model-path", "xgb=models/xgb.pkl",
+                "--test-start-date", "2026-01-01",
+            ],
+        )
+        assert result.exit_code != 0
+
+    def test_bad_model_path_format_exits_nonzero(self):
+        """NAME=PATH format required; plain path should fail gracefully."""
+        config = _minimal_config()
+        with _patch_config_loader(config), _patch_setup_logger():
+            result = _runner().invoke(
+                ml_cli,
+                [
+                    "full-comparison",
+                    "--model-path", "models/xgb.pkl",  # missing NAME=
+                    "--test-start-date", "2026-01-01",
+                    "--test-end-date", "2026-01-31",
+                ],
+            )
+        assert result.exit_code != 0
+
+    def test_bad_thresholds_format_exits_nonzero(self):
+        """Non-numeric thresholds should fail gracefully."""
+        config = _minimal_config()
+        with _patch_config_loader(config), _patch_setup_logger():
+            result = _runner().invoke(
+                ml_cli,
+                [
+                    "full-comparison",
+                    "--model-path", "xgb=models/xgb.pkl",
+                    "--test-start-date", "2026-01-01",
+                    "--test-end-date", "2026-01-31",
+                    "--thresholds", "high,medium,low",
+                ],
+            )
+        assert result.exit_code != 0
+
+
+class TestFullComparisonRun:
+    """End-to-end tests with mocked ML dependencies."""
+
+    def _base_args(self, model_path: str, output: str) -> list:
+        return [
+            "full-comparison",
+            "--model-path", f"xgboost={model_path}",
+            "--test-start-date", "2026-01-01",
+            "--test-end-date", "2026-01-31",
+            "--thresholds", "0.80,0.90",
+            "--output", output,
+        ]
+
+    def test_success_exit_code(self, tmp_path):
+        config = _minimal_config()
+        artifact = _build_mock_artifact()
+        test_df = _build_mock_test_df(artifact["feature_cols"])
+
+        mock_comparator = MagicMock()
+        mock_comparator.model_names = ["xgboost"]
+        mock_comparator.evaluate_at_thresholds.return_value = {
+            0.80: {
+                "total_signals": 5,
+                "win_rate": 0.6,
+                "net_profit_usd": 1500.0,
+            },
+            0.90: {
+                "total_signals": 2,
+                "win_rate": 0.8,
+                "net_profit_usd": 800.0,
+            },
+        }
+        mock_comparator.get_best_threshold_per_model.return_value = {
+            "xgboost": {
+                "best_threshold": 0.80,
+                "total_signals": 5,
+                "win_rate": 0.6,
+                "net_profit_usd": 1500.0,
+            }
+        }
+        import pandas as pd
+
+        mock_comparator.generate_comparison_report.return_value = pd.DataFrame(
+            [{"Model": "xgboost", "Net Profit": "$+1,500", "Meets Target": "NO"}]
+        )
+        mock_comparator.find_signal_overlap.return_value = {
+            "total_unique_signals": 5,
+            "all_models_agree": 5,
+            "majority_agree": 5,
+            "overlap_breakdown": {},
+        }
+        mock_comparator.save_results.return_value = None
+
+        model_pkl = tmp_path / "xgb.pkl"
+        model_pkl.write_bytes(b"fake")
+
+        with _patch_config_loader(config), _patch_setup_logger():
+            with patch("joblib.load", return_value=artifact):
+                with patch("src.ml.model_comparator.ModelComparator", return_value=mock_comparator):
+                    with patch("src.ml.train_xgboost.load_features", return_value=test_df):
+                        result = _runner().invoke(
+                            ml_cli,
+                            self._base_args(str(model_pkl), str(tmp_path)),
+                        )
+
+        assert result.exit_code == 0, result.output
+
+    def test_comparison_table_printed(self, tmp_path):
+        config = _minimal_config()
+        artifact = _build_mock_artifact()
+        test_df = _build_mock_test_df(artifact["feature_cols"])
+
+        import pandas as pd
+
+        mock_comparator = MagicMock()
+        mock_comparator.model_names = ["xgboost"]
+        mock_comparator.evaluate_at_thresholds.return_value = {
+            0.80: {"total_signals": 3, "win_rate": 0.7, "net_profit_usd": 900.0},
+        }
+        mock_comparator.get_best_threshold_per_model.return_value = {
+            "xgboost": {"best_threshold": 0.80, "total_signals": 3,
+                        "win_rate": 0.7, "net_profit_usd": 900.0}
+        }
+        mock_comparator.generate_comparison_report.return_value = pd.DataFrame(
+            [{"Model": "xgboost", "Net Profit": "$+900", "Meets Target": "NO"}]
+        )
+        mock_comparator.save_results.return_value = None
+
+        model_pkl = tmp_path / "xgb.pkl"
+        model_pkl.write_bytes(b"fake")
+
+        with _patch_config_loader(config), _patch_setup_logger():
+            with patch("joblib.load", return_value=artifact):
+                with patch("src.ml.model_comparator.ModelComparator", return_value=mock_comparator):
+                    with patch("src.ml.train_xgboost.load_features", return_value=test_df):
+                        result = _runner().invoke(
+                            ml_cli,
+                            self._base_args(str(model_pkl), str(tmp_path)),
+                        )
+
+        assert "Side-by-Side Comparison" in result.output
+
+    def test_dashboard_hint_printed(self, tmp_path):
+        config = _minimal_config()
+        artifact = _build_mock_artifact()
+        test_df = _build_mock_test_df(artifact["feature_cols"])
+
+        import pandas as pd
+
+        mock_comparator = MagicMock()
+        mock_comparator.model_names = ["xgboost"]
+        mock_comparator.evaluate_at_thresholds.return_value = {
+            0.80: {"total_signals": 2, "win_rate": 0.5, "net_profit_usd": 200.0},
+        }
+        mock_comparator.get_best_threshold_per_model.return_value = {
+            "xgboost": {"best_threshold": 0.80, "total_signals": 2,
+                        "win_rate": 0.5, "net_profit_usd": 200.0}
+        }
+        mock_comparator.generate_comparison_report.return_value = pd.DataFrame(
+            [{"Model": "xgboost"}]
+        )
+        mock_comparator.save_results.return_value = None
+
+        model_pkl = tmp_path / "xgb.pkl"
+        model_pkl.write_bytes(b"fake")
+
+        with _patch_config_loader(config), _patch_setup_logger():
+            with patch("joblib.load", return_value=artifact):
+                with patch("src.ml.model_comparator.ModelComparator", return_value=mock_comparator):
+                    with patch("src.ml.train_xgboost.load_features", return_value=test_df):
+                        result = _runner().invoke(
+                            ml_cli,
+                            self._base_args(str(model_pkl), str(tmp_path)),
+                        )
+
+        assert "streamlit run src/ml/dashboard.py" in result.output
+
+    def test_missing_model_file_exits_nonzero(self, tmp_path):
+        config = _minimal_config()
+        test_df = _build_mock_test_df()
+
+        with _patch_config_loader(config), _patch_setup_logger():
+            with patch("joblib.load", side_effect=FileNotFoundError("not found")):
+                with patch("src.ml.train_xgboost.load_features", return_value=test_df):
+                    result = _runner().invoke(
+                        ml_cli,
+                        self._base_args("/no/such/file.pkl", str(tmp_path)),
+                    )
+
+        assert result.exit_code != 0
+
+    def test_empty_test_features_exits_nonzero(self, tmp_path):
+        import pandas as pd
+
+        config = _minimal_config()
+        artifact = _build_mock_artifact()
+
+        model_pkl = tmp_path / "xgb.pkl"
+        model_pkl.write_bytes(b"fake")
+
+        with _patch_config_loader(config), _patch_setup_logger():
+            with patch("joblib.load", return_value=artifact):
+                with patch("src.ml.train_xgboost.load_features", return_value=pd.DataFrame()):
+                    result = _runner().invoke(
+                        ml_cli,
+                        self._base_args(str(model_pkl), str(tmp_path)),
+                    )
+
+        assert result.exit_code != 0
+
+    def test_multiple_models_registered(self, tmp_path):
+        config = _minimal_config()
+        artifact = _build_mock_artifact()
+        test_df = _build_mock_test_df(artifact["feature_cols"])
+
+        import pandas as pd
+
+        mock_comparator = MagicMock()
+        mock_comparator.model_names = ["xgboost", "lightgbm"]
+        mock_comparator.evaluate_at_thresholds.return_value = {
+            0.80: {"total_signals": 5, "win_rate": 0.6, "net_profit_usd": 1000.0},
+        }
+        mock_comparator.get_best_threshold_per_model.return_value = {
+            "xgboost": {"best_threshold": 0.80, "total_signals": 5,
+                        "win_rate": 0.6, "net_profit_usd": 1000.0},
+            "lightgbm": {"best_threshold": 0.80, "total_signals": 4,
+                         "win_rate": 0.7, "net_profit_usd": 1200.0},
+        }
+        mock_comparator.generate_comparison_report.return_value = pd.DataFrame(
+            [{"Model": "xgboost"}, {"Model": "lightgbm"}]
+        )
+        mock_comparator.find_signal_overlap.return_value = {
+            "total_unique_signals": 8,
+            "all_models_agree": 3,
+            "majority_agree": 3,
+            "overlap_breakdown": {"1_models": 5, "2_models": 3},
+        }
+        mock_comparator.save_results.return_value = None
+
+        model_pkl = tmp_path / "xgb.pkl"
+        model_pkl.write_bytes(b"fake")
+
+        args = [
+            "full-comparison",
+            "--model-path", f"xgboost={model_pkl}",
+            "--model-path", f"lightgbm={model_pkl}",
+            "--test-start-date", "2026-01-01",
+            "--test-end-date", "2026-01-31",
+            "--thresholds", "0.80",
+            "--output", str(tmp_path),
+        ]
+
+        with _patch_config_loader(config), _patch_setup_logger():
+            with patch("joblib.load", return_value=artifact):
+                with patch("src.ml.model_comparator.ModelComparator", return_value=mock_comparator):
+                    with patch("src.ml.train_xgboost.load_features", return_value=test_df):
+                        result = _runner().invoke(ml_cli, args)
+
+        assert result.exit_code == 0, result.output
+        # Overlap section should appear when ≥2 models
+        assert "Signal Overlap" in result.output
+        # add_model called twice (once per model)
+        assert mock_comparator.add_model.call_count == 2
+
+    def test_full_comparison_in_group_help(self):
+        result = _runner().invoke(ml_cli, ["--help"])
+        assert "full-comparison" in result.output

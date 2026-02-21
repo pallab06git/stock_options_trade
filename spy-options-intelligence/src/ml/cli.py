@@ -1470,3 +1470,333 @@ def walk_forward(
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# full-comparison
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("full-comparison")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--model-path",
+    "model_paths",
+    multiple=True,
+    required=True,
+    help=(
+        "Model to include in format NAME=PATH "
+        "(e.g. --model-path xgboost=models/xgboost_v2.pkl). "
+        "Repeat for each model."
+    ),
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Directory containing feature CSVs. Defaults to config value.",
+)
+@click.option(
+    "--test-start-date",
+    required=True,
+    help="First date of the test window (YYYY-MM-DD).",
+)
+@click.option(
+    "--test-end-date",
+    required=True,
+    help="Last date of the test window (YYYY-MM-DD).",
+)
+@click.option(
+    "--thresholds",
+    default="0.70,0.75,0.80,0.85,0.90,0.95",
+    show_default=True,
+    help="Comma-separated confidence thresholds to sweep.",
+)
+@click.option(
+    "--position-size",
+    default=12_500.0,
+    type=float,
+    show_default=True,
+    help="USD position size per trade.",
+)
+@click.option(
+    "--target-gain",
+    default=30.0,
+    type=float,
+    show_default=True,
+    help="Take-profit percentage.",
+)
+@click.option(
+    "--stop-loss",
+    default=-12.0,
+    type=float,
+    show_default=True,
+    help="Stop-loss percentage (negative).",
+)
+@click.option(
+    "--monthly-profit-target",
+    default=10_000.0,
+    type=float,
+    show_default=True,
+    help="Monthly net-profit goal for 'Meets Target' column (USD).",
+)
+@click.option(
+    "--overlap-threshold",
+    default=0.80,
+    type=float,
+    show_default=True,
+    help="Threshold used for signal-overlap analysis.",
+)
+@click.option(
+    "--output",
+    default=None,
+    help="Output directory for all results (default: data/reports/model_comparison).",
+)
+def full_comparison(
+    config_dir,
+    model_paths,
+    features_dir,
+    test_start_date,
+    test_end_date,
+    thresholds,
+    position_size,
+    target_gain,
+    stop_loss,
+    monthly_profit_target,
+    overlap_threshold,
+    output,
+):
+    """Compare multiple trained models at multiple confidence thresholds.
+
+    For each registered model the command:
+
+    \\b
+    1. Loads the .pkl artifact from the provided path.
+    2. Loads feature CSVs filtered to --test-start-date / --test-end-date.
+    3. Runs TradeSimulator at every --thresholds value via ModelComparator.
+    4. Prints a side-by-side comparison table.
+    5. Reports signal overlap between models at --overlap-threshold.
+    6. Saves JSON + CSV results to --output.
+    7. Prints the command to launch the ML dashboard for the saved results.
+
+    \\b
+    Example usage:
+
+        python -m src.cli ml full-comparison \\
+            --model-path xgboost=models/xgboost_v2.pkl \\
+            --model-path lightgbm=models/lightgbm_v1.pkl \\
+            --test-start-date 2025-12-23 \\
+            --test-end-date 2026-02-19
+
+    Each --model-path argument must be in NAME=PATH format.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import joblib
+    import numpy as _np
+    import pandas as _pd
+
+    from src.ml.model_comparator import ModelComparator, DEFAULT_THRESHOLDS
+    from src.ml.train_xgboost import load_features, _NON_FEATURE_COLS
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        # ── Resolve paths ──────────────────────────────────────────────
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output) if output else _Path("data/reports/model_comparison")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # ── Parse --thresholds ─────────────────────────────────────────
+        try:
+            threshold_list = [float(t.strip()) for t in thresholds.split(",")]
+        except ValueError:
+            click.echo(
+                f"Error: --thresholds must be comma-separated floats "
+                f"(e.g. '0.70,0.80,0.90'), got: {thresholds!r}",
+                err=True,
+            )
+            sys.exit(1)
+
+        # ── Parse --model-path NAME=PATH pairs ────────────────────────
+        model_entries = []
+        for spec in model_paths:
+            if "=" not in spec:
+                click.echo(
+                    f"Error: --model-path must be NAME=PATH, got: {spec!r}",
+                    err=True,
+                )
+                sys.exit(1)
+            name, path = spec.split("=", 1)
+            name = name.strip()
+            path = path.strip()
+            if not name or not path:
+                click.echo(
+                    f"Error: both name and path required in NAME=PATH, got: {spec!r}",
+                    err=True,
+                )
+                sys.exit(1)
+            model_entries.append((name, path))
+
+        click.echo(f"\n--- Full Model Comparison ---")
+        click.echo(f"Features dir:       {feat_dir}")
+        click.echo(f"Test window:        {test_start_date} → {test_end_date}")
+        click.echo(
+            f"Thresholds:         {', '.join(f'{t:.0%}' for t in threshold_list)}"
+        )
+        click.echo(f"Position size:      ${position_size:,.0f} per trade")
+        click.echo(f"Target / Stop:      +{target_gain:.0f}% / {stop_loss:.0f}%")
+        click.echo(f"Output dir:         {out_dir}")
+        click.echo("")
+
+        # ── Load test features ─────────────────────────────────────────
+        click.echo("Loading test features…")
+        test_df = load_features(feat_dir, test_start_date, test_end_date)
+        if test_df.empty:
+            click.echo(
+                f"Error: no feature data found in {feat_dir} for "
+                f"{test_start_date} → {test_end_date}",
+                err=True,
+            )
+            sys.exit(1)
+        click.echo(
+            f"  Loaded {len(test_df):,} rows across "
+            f"{test_df['date'].nunique() if 'date' in test_df.columns else '?'} dates\n"
+        )
+
+        # ── Build ModelComparator ──────────────────────────────────────
+        comparator = ModelComparator(
+            position_size_usd=position_size,
+            target_gain_pct=target_gain,
+            stop_loss_pct=stop_loss,
+            monthly_profit_target=monthly_profit_target,
+        )
+
+        # ── Register models ────────────────────────────────────────────
+        for model_name, model_path in model_entries:
+            click.echo(f"Loading model '{model_name}' from {model_path}…")
+            try:
+                artifact = joblib.load(model_path)
+            except FileNotFoundError:
+                click.echo(f"  ERROR: file not found: {model_path}", err=True)
+                sys.exit(1)
+            except Exception as exc:
+                click.echo(f"  ERROR loading {model_path}: {exc}", err=True)
+                sys.exit(1)
+
+            model = artifact.get("model") or artifact
+            feature_cols = artifact.get("feature_cols")
+            best_params = artifact.get("params") or artifact.get("best_params") or {}
+            opt_score = float(artifact.get("optimization_score", 0.0))
+            model_type = artifact.get("model_type", "xgboost")
+
+            comparator.add_model(
+                name=model_name,
+                model=model,
+                feature_cols=feature_cols,
+                best_params=best_params,
+                optimization_score=opt_score,
+                model_type=model_type,
+            )
+            click.echo(
+                f"  Registered '{model_name}' "
+                f"(type={model_type}, "
+                f"features={len(feature_cols) if feature_cols else 'auto'})\n"
+            )
+
+        # ── Evaluate all models at all thresholds ──────────────────────
+        for model_name in comparator.model_names:
+            click.echo(
+                f"Evaluating '{model_name}' at "
+                f"{len(threshold_list)} threshold(s)…"
+            )
+            results = comparator.evaluate_at_thresholds(
+                model_name, test_df, thresholds=threshold_list
+            )
+
+            # Quick per-threshold summary
+            click.echo(
+                f"  {'Threshold':>10}  {'Signals':>8}  {'Win%':>7}  {'Net Profit':>12}"
+            )
+            click.echo(f"  {'-' * 44}")
+            for t in sorted(results.keys()):
+                r = results[t]
+                net = r.get("net_profit_usd", 0.0)
+                sign = "+" if net >= 0 else ""
+                click.echo(
+                    f"  {t:>10.0%}  {r.get('total_signals', 0):>8}  "
+                    f"{r.get('win_rate', 0.0):>6.1%}  "
+                    f"{sign}${net:>10,.0f}"
+                )
+            click.echo("")
+
+        # ── Best threshold per model ───────────────────────────────────
+        click.echo("--- Best Threshold Per Model ---")
+        best_per_model = comparator.get_best_threshold_per_model()
+        for model_name, info in best_per_model.items():
+            net = info["net_profit_usd"]
+            sign = "+" if net >= 0 else ""
+            click.echo(
+                f"  {model_name:<20}  threshold={info['best_threshold']:.0%}  "
+                f"signals={info['total_signals']}  "
+                f"win_rate={info['win_rate']:.1%}  "
+                f"net={sign}${net:,.0f}"
+            )
+        click.echo("")
+
+        # ── Side-by-side comparison table ─────────────────────────────
+        click.echo("--- Side-by-Side Comparison (80% threshold) ---")
+        comp_df = comparator.generate_comparison_report(comparison_threshold=0.80)
+        # Align columns for terminal output
+        click.echo(comp_df.to_string(index=False))
+        click.echo("")
+
+        # ── Signal overlap ─────────────────────────────────────────────
+        if len(comparator.model_names) >= 2:
+            click.echo(
+                f"--- Signal Overlap at {overlap_threshold:.0%} Threshold ---"
+            )
+            overlap = comparator.find_signal_overlap(threshold=overlap_threshold)
+            click.echo(
+                f"  Unique signals:    {overlap.get('total_unique_signals', 0)}"
+            )
+            click.echo(
+                f"  All models agree:  {overlap.get('all_models_agree', 0)}"
+            )
+            click.echo(
+                f"  Majority agree:    {overlap.get('majority_agree', 0)}"
+            )
+            breakdown = overlap.get("overlap_breakdown", {})
+            for k, v in sorted(breakdown.items()):
+                click.echo(f"  {k.replace('_', ' ')}:  {v}")
+            click.echo("")
+
+        # ── Save results ───────────────────────────────────────────────
+        click.echo(f"Saving results to {out_dir}/…")
+        comparator.save_results(out_dir)
+
+        # Print file list
+        saved_files = sorted(out_dir.iterdir())
+        for f in saved_files:
+            size_kb = f.stat().st_size / 1024
+            click.echo(f"  {f.name:<45}  {size_kb:>6.1f} KB")
+
+        # ── Dashboard launch hint ──────────────────────────────────────
+        click.echo(
+            f"\nTo explore results interactively, launch the dashboard:\n"
+            f"  streamlit run src/ml/dashboard.py -- "
+            f"--results-dir {out_dir}"
+        )
+
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)

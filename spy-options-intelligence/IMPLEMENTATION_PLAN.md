@@ -799,6 +799,33 @@
   - TestDashboardConstants ×3: Path type, colour format (#rrggbb), threshold coverage
 - [x] Full test suite: 1310 passing, 35 skipped
 
+## Step 49: full-comparison CLI Command + requirements.txt Update ✅
+- [x] Add `full-comparison` command to `src/ml/cli.py`
+  - Options: `--model-path NAME=PATH` (repeatable, required), `--features-dir`, `--test-start-date` (required), `--test-end-date` (required), `--thresholds` (CSV floats, default 0.70–0.95), `--position-size`, `--target-gain`, `--stop-loss`, `--monthly-profit-target`, `--overlap-threshold`, `--output`
+  - Pipeline:
+    1. Parses `NAME=PATH` model specs; exits with clear error if malformed
+    2. Parses threshold CSV with `float()` conversion; exits on bad format
+    3. Loads test feature CSVs via `load_features(features_dir, start, end)`; exits if empty
+    4. Loads each model artifact with `joblib.load()`; exits with FileNotFoundError message
+    5. Registers each model with `ModelComparator.add_model()`
+    6. Calls `evaluate_at_thresholds()` per model; prints per-threshold summary table
+    7. Calls `get_best_threshold_per_model()` → prints best-threshold summary
+    8. Calls `generate_comparison_report(0.80)` → prints side-by-side table
+    9. Calls `find_signal_overlap()` when ≥2 models registered; prints overlap stats
+    10. Calls `save_results(output_dir)` → lists saved files with sizes
+    11. Prints `streamlit run src/ml/dashboard.py -- --results-dir <output>` hint
+  - Full example: `python -m src.cli ml full-comparison --model-path xgboost=models/xgb.pkl --model-path lightgbm=models/lgbm.pkl --test-start-date 2025-12-23 --test-end-date 2026-02-19`
+- [x] Update `requirements.txt` — add new optional ML deps:
+  - `optuna>=3.0.0` — Bayesian hyperparameter optimization
+  - `lightgbm>=4.0.0` — LightGBM gradient boosting
+  - `plotly>=5.18.0` — interactive charts for ML dashboard
+  - `torch>=2.0.0` — PyTorch for LSTM model (optional)
+- [x] Unit tests: 18 new tests in `tests/unit/test_ml_cli.py` (total 50 tests)
+  - TestFullComparisonHelp ×11: help text, required arg validation, bad NAME=PATH format, bad threshold format
+  - TestFullComparisonRun ×6: success exit code, comparison table printed, dashboard hint, missing model file, empty features, multiple models + overlap
+  - TestMainCliIntegration ×1: full-comparison accessible from main CLI
+- [x] Full test suite: 1329 passing, 35 skipped
+
 ## Future
 - [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
 - [ ] VIX data integration (upgrade massive.com plan)
