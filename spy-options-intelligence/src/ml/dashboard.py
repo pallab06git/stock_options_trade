@@ -581,11 +581,42 @@ def _tab_trade_explorer(
     if "profit_loss_usd" in display_df.columns:
         display_df = display_df.sort_values("profit_loss_usd", ascending=False)
 
-    st.dataframe(
-        display_df[show_cols] if show_cols else display_df,
-        use_container_width=True,
-        hide_index=True,
-    )
+    display_df = display_df.reset_index(drop=True)
+    subset_df = display_df[show_cols].copy() if show_cols else display_df.copy()
+
+    _float_fmt = {
+        col: "{:.2f}"
+        for col in [
+            "entry_price_per_share", "exit_price_per_share",
+            "profit_loss_usd", "profit_loss_pct",
+            "confidence", "time_in_trade_minutes",
+        ]
+        if col in subset_df.columns
+    }
+
+    if "is_winner" in display_df.columns:
+        _winners = display_df["is_winner"].values
+
+        def _color_trade_row(row):
+            is_w = bool(_winners[row.name]) if row.name < len(_winners) else False
+            color = (
+                "background-color: #d4edda; color: #155724"
+                if is_w
+                else "background-color: #f8d7da; color: #721c24"
+            )
+            return [color] * len(row)
+
+        st.dataframe(
+            subset_df.style.apply(_color_trade_row, axis=1).format(_float_fmt),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.dataframe(
+            subset_df.style.format(_float_fmt),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     st.caption(f"Showing {len(display_df)} of {n_trades} trades")
 
