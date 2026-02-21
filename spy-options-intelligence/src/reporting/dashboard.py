@@ -36,7 +36,7 @@ except ImportError as exc:
 
 _DATA_ROOT = Path("data")
 _REPORTS_DIR = _DATA_ROOT / "reports"
-_MOVEMENT_DIR = _REPORTS_DIR / "options_movement"
+_FORWARD_DIR = _REPORTS_DIR / "options_forward"
 _SPACE_DIR = _REPORTS_DIR / "space"
 _HARDWARE_DIR = _REPORTS_DIR / "hardware"
 
@@ -46,13 +46,13 @@ _HARDWARE_DIR = _REPORTS_DIR / "hardware"
 # ---------------------------------------------------------------------------
 
 
-def _load_movement(start: str, end: str) -> pd.DataFrame:
-    """Load movement CSVs filtered to the given date range."""
-    if not _MOVEMENT_DIR.exists():
+def _load_forward(start: str, end: str) -> pd.DataFrame:
+    """Load forward-scan CSVs filtered to the given date range."""
+    if not _FORWARD_DIR.exists():
         return pd.DataFrame()
 
     dfs = []
-    for csv_path in sorted(_MOVEMENT_DIR.glob("*_movement.csv")):
+    for csv_path in sorted(_FORWARD_DIR.glob("*_forward.csv")):
         try:
             dfs.append(pd.read_csv(csv_path))
         except Exception:
@@ -117,22 +117,24 @@ def _tab_options_movement() -> None:
         st.error("Start date must be before end date.")
         return
 
-    df = _load_movement(str(start), str(end))
+    df = _load_forward(str(start), str(end))
 
     if df.empty:
-        st.info("No movement reports found for the selected range. Run `scan-options` first.")
+        st.info("No forward scan reports found for the selected range. Run `scan-options-forward` first.")
         return
 
-    st.subheader(f"{len(df)} events  |  {df['date'].nunique() if 'date' in df.columns else 0} days")
+    st.subheader(f"{len(df)} qualifying entries  |  {df['date'].nunique() if 'date' in df.columns else 0} days")
 
     # Summary metrics
+    c1, c2, c3, c4 = st.columns(4)
+    if "minutes_to_trigger" in df.columns:
+        c1.metric("Median mins to trigger", f"{df['minutes_to_trigger'].median():.0f} min")
     if "gain_pct" in df.columns:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Avg Gain", f"{df['gain_pct'].mean():.1f}%")
-        if "above_20pct_duration_min" in df.columns:
-            c2.metric("Avg >20% duration", f"{df['above_20pct_duration_min'].mean():.1f} min")
-        if "above_10pct_duration_min" in df.columns:
-            c3.metric("Avg >10% duration", f"{df['above_10pct_duration_min'].mean():.1f} min")
+        c2.metric("Median gain at trigger", f"{df['gain_pct'].median():.1f}%")
+    if "above_20pct_duration_min" in df.columns:
+        c3.metric("Median ≥20% duration", f"{df['above_20pct_duration_min'].median():.0f} min")
+    if "above_10pct_duration_min" in df.columns:
+        c4.metric("Median ≥10% duration", f"{df['above_10pct_duration_min'].median():.0f} min")
 
     # Events table
     st.subheader("Events")
