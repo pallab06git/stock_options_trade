@@ -185,10 +185,9 @@ class OptionsForwardScanner:
 
         print(f"\n--- Options Forward Scan Report ---")
         print(f"Period:                   {start_date} → {end_date}")
-        print(f"Forward window:           {self.ref_window} min")
         print(f"Contract-days scanned:    {cdays}")
         print(f"Total minute bars:        {t_bars:,}")
-        print(f"Total qualifying entries: {n_events:,}")
+        print(f"Total events:             {n_events:,}")
 
         observations: List[str] = []
 
@@ -202,50 +201,20 @@ class OptionsForwardScanner:
                 [per_cday, np.zeros(n_zero, dtype=int)]
             ) if cdays > 0 else per_cday
             print(
-                f"Entries/contract-day:     "
+                f"Events/contract-day:      "
                 f"min={int(all_counts.min())} "
                 f"median={np.median(all_counts):.1f} "
                 f"max={int(all_counts.max())}"
             )
 
-            # Time to trigger (latency from entry to 20% hit)
-            med_ttrig  = df_ev["minutes_to_trigger"].median()
-            mean_ttrig = df_ev["minutes_to_trigger"].mean()
-            print(
-                f"Mins to trigger (med/mean): "
-                f"{med_ttrig:.1f} / {mean_ttrig:.1f} min"
-            )
-
-            # Duration stats
-            med_dur20  = df_ev["above_20pct_duration_min"].median()
-            mean_dur20 = df_ev["above_20pct_duration_min"].mean()
-            med_dur10  = df_ev["above_10pct_duration_min"].median()
-            mean_dur10 = df_ev["above_10pct_duration_min"].mean()
-            print(
-                f"Duration ≥20% (med/mean): "
-                f"{med_dur20:.1f} / {mean_dur20:.1f} min"
-            )
-            print(
-                f"Duration ≥10% (med/mean): "
-                f"{med_dur10:.1f} / {mean_dur10:.1f} min"
-            )
-
-            # Gain distribution
-            med_gain = df_ev["gain_pct"].median()
-            max_gain = df_ev["gain_pct"].max()
-            print(f"Gain at trigger (med/max): {med_gain:.1f}% / {max_gain:.1f}%")
-
-            # Hour distribution of entry times
-            df_ev["_entry_hour"] = pd.to_numeric(
-                df_ev["entry_time_et"].str[:2], errors="coerce"
-            ).fillna(0).astype(int)
-            hour_counts = df_ev.groupby("_entry_hour").size()
-            if not hour_counts.empty:
-                max_cnt = hour_counts.max()
-                print(f"\nEntry distribution by hour (ET):")
-                for hour, cnt in sorted(hour_counts.items()):
-                    bar_len = round(cnt / max_cnt * 30) if max_cnt > 0 else 0
-                    print(f"  {hour:02d}:xx  {cnt:4d}  {'#' * bar_len}")
+            # Positive-minute stats (same definition as backtest)
+            total_pos_mins = int(df_ev["above_20pct_duration_min"].sum())
+            pos_rate = total_pos_mins / t_bars * 100.0 if t_bars > 0 else 0.0
+            med_dur = df_ev["above_20pct_duration_min"].median()
+            mean_dur = df_ev["above_20pct_duration_min"].mean()
+            print(f"Total >20% minutes:       {total_pos_mins:,}")
+            print(f"Positive-minute rate:     {pos_rate:.2f}%")
+            print(f"Duration >20% (med/mean): {med_dur:.1f} / {mean_dur:.1f} min")
 
             # Hour distribution of trigger times (when 20% threshold was first hit)
             df_ev["_trigger_hour"] = pd.to_numeric(
@@ -260,114 +229,93 @@ class OptionsForwardScanner:
                     print(f"  {hour:02d}:xx  {cnt:4d}  {'#' * bar_len}")
 
             # ------------------------------------------------------------------
-            # Key observations (auto-generated)
+            # Key observations (auto-generated, matching backtest format)
             # ------------------------------------------------------------------
 
-            # 1. Trigger latency
-            if med_ttrig <= 15:
+            # 1. Positive-minute rate
+            if pos_rate >= 50:
                 observations.append(
-                    f"Median {med_ttrig:.0f} min to trigger — moves materialize quickly; "
-                    f"entry timing is critical since the window is narrow"
+                    f"{pos_rate:.2f}% positive-minute rate — over half of all scanned minutes "
+                    f"the option was above its +{self.trigger_pct:.0f}% trigger level, which "
+                    f"reflects real 0DTE behavior (options spike and stay elevated for long stretches)"
                 )
-            elif med_ttrig <= 45:
+            elif pos_rate >= 20:
                 observations.append(
-                    f"Median {med_ttrig:.0f} min to trigger (mean {mean_ttrig:.0f} min) — "
-                    f"qualifying moves take ~half an hour on average to develop after entry"
-                )
-            else:
-                observations.append(
-                    f"Median {med_ttrig:.0f} min to trigger (mean {mean_ttrig:.0f} min) — "
-                    f"most qualifying moves develop slowly; patience required after entry"
-                )
-
-            # 2. Duration above 20% vs 10% (run sustainability)
-            if med_dur20 <= 5 and mean_dur20 > 3 * med_dur20:
-                observations.append(
-                    f"Runs are brief once triggered: median {med_dur20:.0f} min above "
-                    f"+{self.trigger_pct:.0f}% but mean {mean_dur20:.1f} min — a small number "
-                    f"of long-tail events pull the average up significantly"
-                )
-            elif med_dur10 >= 2 * med_dur20:
-                observations.append(
-                    f"Sustained moves: median {med_dur10:.0f} min above "
-                    f"+{self.sustained_pct:.0f}% vs {med_dur20:.0f} min above "
-                    f"+{self.trigger_pct:.0f}% — options tend to hold partial gains "
-                    f"well after the peak fades"
+                    f"{pos_rate:.2f}% positive-minute rate — roughly 1-in-"
+                    f"{round(100/pos_rate):.0f} minutes the option was above its "
+                    f"+{self.trigger_pct:.0f}% trigger level"
                 )
             else:
                 observations.append(
-                    f"Duration above +{self.trigger_pct:.0f}%: med {med_dur20:.0f} min / "
-                    f"mean {mean_dur20:.1f} min — duration above +{self.sustained_pct:.0f}%: "
-                    f"med {med_dur10:.0f} min / mean {mean_dur10:.1f} min"
+                    f"{pos_rate:.2f}% positive-minute rate — moves above "
+                    f"+{self.trigger_pct:.0f}% are infrequent; most contracts "
+                    f"expire without a significant spike"
                 )
 
-            # 3. Peak entry hour
-            if not hour_counts.empty:
-                peak_hour = int(hour_counts.idxmax())
-                peak_cnt  = int(hour_counts.max())
-                peak_pct  = peak_cnt / n_events * 100
-                if peak_hour <= 9:
-                    observations.append(
-                        f"Open dominates: 09:xx has the most qualifying entries "
-                        f"({peak_cnt}, {peak_pct:.0f}%) — buying near the open gives the "
-                        f"highest frequency of catching a 20%+ run within the session"
-                    )
-                elif peak_hour >= 15:
-                    observations.append(
-                        f"Late-day entries most frequent: {peak_hour:02d}:xx "
-                        f"({peak_cnt}, {peak_pct:.0f}%) — gamma-driven end-of-day moves "
-                        f"provide the most entry opportunities"
-                    )
-                else:
-                    observations.append(
-                        f"{peak_hour:02d}:xx has the most qualifying entries "
-                        f"({peak_cnt}, {peak_pct:.0f}%) — mid-session momentum "
-                        f"creates the most entry opportunities"
-                    )
-
-            # 3b. Peak trigger hour (when does the 20% move actually materialise?)
+            # 2. Peak trigger hour
             if not trig_hour_counts.empty:
-                peak_trig_hour = int(trig_hour_counts.idxmax())
-                peak_trig_cnt  = int(trig_hour_counts.max())
-                peak_trig_pct  = peak_trig_cnt / n_events * 100
-                if peak_trig_hour <= 9:
+                peak_hour = int(trig_hour_counts.idxmax())
+                peak_cnt  = int(trig_hour_counts.max())
+                peak_pct  = peak_cnt / n_events * 100
+                if peak_hour >= 15:
                     observations.append(
-                        f"Most moves trigger at the open: 09:xx accounts for "
-                        f"{peak_trig_cnt} triggers ({peak_trig_pct:.0f}%) — "
-                        f"gap-and-go dynamics resolve rapidly near the 9:30 open"
+                        f"Late-day concentration: {peak_hour:02d}:xx has the most events "
+                        f"({peak_cnt}, {peak_pct:.0f}%), consistent with gamma acceleration into close"
                     )
-                elif peak_trig_hour >= 15:
+                elif peak_hour <= 9:
                     observations.append(
-                        f"Triggers cluster into the close: {peak_trig_hour:02d}:xx "
-                        f"has the most trigger events ({peak_trig_cnt}, {peak_trig_pct:.0f}%) — "
-                        f"end-of-day acceleration drives the majority of confirmed 20%+ moves"
+                        f"Open-bell dominance: 09:xx has the most events "
+                        f"({peak_cnt}, {peak_pct:.0f}%), driven by opening-range volatility"
                     )
                 else:
                     observations.append(
-                        f"Moves confirm in mid-session: {peak_trig_hour:02d}:xx "
-                        f"has the most trigger events ({peak_trig_cnt}, {peak_trig_pct:.0f}%) — "
-                        f"the bulk of 20%+ moves materialise in mid-morning trading"
+                        f"{peak_hour:02d}:xx has the most events ({peak_cnt}, {peak_pct:.0f}%), "
+                        f"mid-session momentum driving intraday moves"
                     )
 
-            # 4. Gain magnitude
-            if max_gain > 2 * self.trigger_pct:
+            # 3. Morning distribution (09–11:xx)
+            morning = {h: trig_hour_counts[h] for h in [9, 10, 11] if h in trig_hour_counts.index}
+            if len(morning) >= 2:
+                vals = list(morning.values())
+                spread = max(vals) - min(vals)
+                if spread <= max(vals) * 0.25:
+                    avg_m = sum(vals) / len(vals)
+                    labels = " / ".join(f"{h:02d}:xx" for h in morning)
+                    observations.append(
+                        f"Morning distribution even: {labels} each have "
+                        f"~{avg_m:.0f} events — no single morning hour dominates"
+                    )
+                else:
+                    peak_m = max(morning, key=morning.get)
+                    observations.append(
+                        f"Morning peak at {peak_m:02d}:xx ({morning[peak_m]} events) "
+                        f"while other morning hours are quieter"
+                    )
+
+            # 4. Duration skew
+            if mean_dur > 2 * med_dur:
                 observations.append(
-                    f"Median gain at trigger {med_gain:.1f}%, max {max_gain:.1f}% — "
-                    f"tail events can reach {max_gain/self.trigger_pct:.1f}× the trigger "
-                    f"threshold, indicating occasional explosive moves"
+                    f"Median {med_dur:.0f} min above +{self.trigger_pct:.0f}% but "
+                    f"mean {mean_dur:.1f} min — heavily right-skewed, most events are "
+                    f"brief but a few run for hours"
+                )
+            elif mean_dur > 1.5 * med_dur:
+                observations.append(
+                    f"Median {med_dur:.0f} min above +{self.trigger_pct:.0f}% but "
+                    f"mean {mean_dur:.1f} min — moderately right-skewed; some events "
+                    f"sustain well beyond the typical duration"
                 )
             else:
                 observations.append(
-                    f"Median gain at trigger {med_gain:.1f}%, max {max_gain:.1f}% — "
-                    f"gains cluster just above the +{self.trigger_pct:.0f}% threshold "
-                    f"with limited upside beyond it"
+                    f"Median {med_dur:.0f} min and mean {mean_dur:.1f} min above "
+                    f"+{self.trigger_pct:.0f}% — relatively symmetric duration distribution"
                 )
 
         else:
-            print(f"Entries/contract-day:     min=0 median=0.0 max=0")
-            print(f"Mins to trigger (med/mean): N/A")
-            print(f"Duration ≥20% (med/mean): N/A")
-            print(f"Duration ≥10% (med/mean): N/A")
+            print(f"Events/contract-day:      min=0 median=0.0 max=0")
+            print(f"Total >20% minutes:       0")
+            print(f"Positive-minute rate:     0.00%")
+            print(f"Duration >20% (med/mean): N/A")
             observations.append("No qualifying forward entries found in the scanned period")
 
         # Print key observations

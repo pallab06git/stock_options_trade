@@ -248,29 +248,20 @@ class TestGenerateReportForward:
         path = scanner.generate_report([_SAMPLE_FWD_EVENT], "2025-03-01", "2025-03-31")
         assert "forward" in path.name
 
-    def test_prints_minutes_to_trigger(self, tmp_path, capsys):
+    def test_prints_positive_minute_rate(self, tmp_path, capsys):
         scanner = OptionsForwardScanner(_make_config(tmp_path))
         scanner._last_scan_stats = {"contract_days": 1, "total_bars": 100}
         scanner.generate_report([_SAMPLE_FWD_EVENT], "2025-03-01", "2025-03-31")
         out = capsys.readouterr().out
-        assert "Mins to trigger" in out
+        assert "Positive-minute rate" in out
+        assert "Total >20% minutes" in out
 
     def test_prints_duration_stats(self, tmp_path, capsys):
         scanner = OptionsForwardScanner(_make_config(tmp_path))
         scanner._last_scan_stats = {"contract_days": 1, "total_bars": 100}
         scanner.generate_report([_SAMPLE_FWD_EVENT], "2025-03-01", "2025-03-31")
         out = capsys.readouterr().out
-        assert "Duration" in out
-        assert "20%" in out
-        assert "10%" in out
-
-    def test_prints_entry_hour_distribution(self, tmp_path, capsys):
-        scanner = OptionsForwardScanner(_make_config(tmp_path))
-        scanner._last_scan_stats = {"contract_days": 1, "total_bars": 100}
-        scanner.generate_report([_SAMPLE_FWD_EVENT], "2025-03-01", "2025-03-31")
-        out = capsys.readouterr().out
-        assert "Entry distribution by hour" in out
-        assert "09:xx" in out   # entry_time_et = "09:30:00"
+        assert "Duration >20%" in out
 
     def test_prints_trigger_hour_distribution(self, tmp_path, capsys):
         scanner = OptionsForwardScanner(_make_config(tmp_path))
@@ -285,7 +276,7 @@ class TestGenerateReportForward:
         scanner._last_scan_stats = {"contract_days": 3, "total_bars": 150}
         scanner.generate_report([], "2025-03-01", "2025-03-31")
         out = capsys.readouterr().out
-        assert "Total qualifying entries: 0" in out
+        assert "Total events:             0" in out
         assert "N/A" in out
 
     def test_load_reports_returns_empty_when_no_dir(self, tmp_path):
