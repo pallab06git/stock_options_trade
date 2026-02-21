@@ -1,12 +1,12 @@
 {
   "command": "download-massive-options",
-  "start_time": "2026-02-20T23:51:24.678273+00:00",
-  "end_time": "2026-02-20T23:51:25.928080+00:00",
-  "elapsed_sec": 1.25,
-  "cpu_pct_avg": 6.0,
-  "mem_rss_start_mb": 108.86,
-  "mem_rss_end_mb": 126.73,
-  "mem_delta_mb": 17.88,
+  "start_time": "2026-02-21T00:17:22.575852+00:00",
+  "end_time": "2026-02-21T01:47:39.416114+00:00",
+  "elapsed_sec": 5416.98,
+  "cpu_pct_avg": 0.05,
+  "mem_rss_start_mb": 108.47,
+  "mem_rss_end_mb": 129.61,
+  "mem_delta_mb": 21.14,
   "disk_read_mb": 0.0,
   "disk_write_mb": 0.0
 }

@@ -1,11 +1,11 @@
 {
   "command": "error-fn",
-  "start_time": "2026-02-20T22:00:04.884914+00:00",
-  "end_time": "2026-02-20T22:00:04.884961+00:00",
+  "start_time": "2026-02-21T02:12:14.418614+00:00",
+  "end_time": "2026-02-21T02:12:14.418659+00:00",
   "elapsed_sec": 0.0,
   "cpu_pct_avg": 50.0,
-  "mem_rss_start_mb": 221.08,
-  "mem_rss_end_mb": 221.08,
+  "mem_rss_start_mb": 222.17,
+  "mem_rss_end_mb": 222.17,
   "mem_delta_mb": 0.0,
   "disk_read_mb": 0.0,
   "disk_write_mb": 0.0
