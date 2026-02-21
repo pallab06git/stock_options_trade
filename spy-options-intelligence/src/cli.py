@@ -1265,16 +1265,53 @@ def engineer_features(config_dir, start_date, end_date, source):
     help="End date (YYYY-MM-DD).",
 )
 def scan_options(config_dir, start_date, end_date):
-    """Scan processed options features for 20%+ intraday moves."""
+    """Backtest scan: detect completed 20%+ moves using backward-looking logic."""
     try:
         loader = ConfigLoader(config_dir=config_dir)
         config = loader.load()
 
         setup_logger(config)
 
-        from src.processing.options_scanner import OptionsScanner
+        from src.processing.options_backtest_scanner import OptionsBacktestScanner
 
-        scanner = OptionsScanner(config)
+        scanner = OptionsBacktestScanner(config)
+        events = scanner.scan(start_date, end_date)
+        path = scanner.generate_report(events, start_date, end_date)
+
+        click.echo(f"\nReport saved to: {path}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("scan-options-forward")
+@click.option(
+    "--config-dir",
+    default="config",
+    help="Path to config directory containing YAML files.",
+)
+@click.option(
+    "--start-date",
+    required=True,
+    help="Start date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    required=True,
+    help="End date (YYYY-MM-DD).",
+)
+def scan_options_forward(config_dir, start_date, end_date):
+    """Forward scan: find entry points where price rose 20%+ in the next 120 min."""
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+
+        setup_logger(config)
+
+        from src.processing.options_forward_scanner import OptionsForwardScanner
+
+        scanner = OptionsForwardScanner(config)
         events = scanner.scan(start_date, end_date)
         path = scanner.generate_report(events, start_date, end_date)
 

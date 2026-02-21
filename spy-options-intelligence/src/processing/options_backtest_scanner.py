@@ -2,14 +2,24 @@
 # This source code is proprietary and confidential.
 # Unauthorized copying, modification, or commercial use is strictly prohibited.
 
-"""Options 20%-move scanner.
+"""Backtest scanner: backward-looking 20%-move detector for options.
 
-Scans processed options feature files for intraday moves ≥ 20% relative
-to any price seen in the prior 120-minute reference window.
+For each minute bar the scanner looks BACK up to ``reference_window_minutes``
+bars and asks:
 
-For each detected event the scanner records:
-  - How long the option stayed above the +20% level
-  - How long it stayed above the +10% level (sustained run)
+    "Has the option already risen ≥20% above any price seen in the prior
+    N minutes?"
+
+When the answer is yes an *event* is recorded with:
+  - reference_time_et  : the bar that was the lowest point in the lookback
+  - trigger_time_et    : the bar where the 20% threshold was first crossed
+  - gain_pct           : % gain from reference to trigger price
+  - above_20pct_duration_min : minutes it stayed ≥20% above reference after trigger
+  - above_10pct_duration_min : minutes it stayed ≥10% above reference (sustained run)
+
+This is the *backtest* variant — it detects moves that have already happened
+and is useful for understanding historical frequency and duration statistics.
+For prospective entry-point analysis (forward-looking) use OptionsForwardScanner.
 
 Events are written to CSV in data/reports/options_movement/.
 """
@@ -26,8 +36,13 @@ from src.utils.logger import get_logger
 logger = get_logger()
 
 
-class OptionsScanner:
-    """Scan processed options features for 20%+ intraday price moves.
+class OptionsBacktestScanner:
+    """Backward-looking scanner: detects completed 20%+ intraday moves.
+
+    At each bar the scanner compares the current close to the minimum price
+    seen in the prior ``reference_window_minutes`` bars.  If the gain exceeds
+    ``trigger_threshold_pct`` an event is recorded and the forward duration
+    above both the trigger and sustained thresholds is measured.
 
     Configuration is read from config["pipeline_v2"]["scanner"]:
       - reference_window_minutes: rolling lookback for reference price (default 120)
@@ -109,7 +124,7 @@ class OptionsScanner:
             "total_bars": total_bars,
         }
         logger.info(
-            f"Scan [{start_date} → {end_date}]: {len(all_events)} events found"
+            f"Backtest scan [{start_date} → {end_date}]: {len(all_events)} events found"
         )
         return all_events
 
@@ -157,11 +172,13 @@ class OptionsScanner:
         t_bars = self._last_scan_stats["total_bars"]
         n_events = len(events)
 
-        print(f"\n--- Options Movement Report ---")
+        print(f"\n--- Options Backtest Movement Report ---")
         print(f"Period:                   {start_date} → {end_date}")
         print(f"Contract-days scanned:    {cdays}")
-        print(f"Total minute bars:        {t_bars}")
-        print(f"Total events:             {n_events}")
+        print(f"Total minute bars:        {t_bars:,}")
+        print(f"Total events:             {n_events:,}")
+
+        observations: List[str] = []
 
         if n_events > 0:
             df_ev = pd.DataFrame(events)
@@ -184,7 +201,7 @@ class OptionsScanner:
             pos_rate = total_pos_mins / t_bars * 100.0 if t_bars > 0 else 0.0
             med_dur = df_ev["above_20pct_duration_min"].median()
             mean_dur = df_ev["above_20pct_duration_min"].mean()
-            print(f"Total >20% minutes:       {total_pos_mins}")
+            print(f"Total >20% minutes:       {total_pos_mins:,}")
             print(f"Positive-minute rate:     {pos_rate:.2f}%")
             print(
                 f"Duration >20% (med/mean): "
@@ -202,11 +219,101 @@ class OptionsScanner:
                 for hour, cnt in sorted(hour_counts.items()):
                     bar_len = round(cnt / max_cnt * 30) if max_cnt > 0 else 0
                     print(f"  {hour:02d}:xx  {cnt:4d}  {'#' * bar_len}")
+
+            # ------------------------------------------------------------------
+            # Key observations (auto-generated)
+            # ------------------------------------------------------------------
+
+            # 1. Positive-minute rate
+            if pos_rate >= 50:
+                observations.append(
+                    f"{pos_rate:.2f}% positive-minute rate — over half of all scanned minutes "
+                    f"the option was above its +{self.trigger_pct:.0f}% trigger level, which "
+                    f"reflects real 0DTE behavior (options spike and stay elevated for long stretches)"
+                )
+            elif pos_rate >= 20:
+                observations.append(
+                    f"{pos_rate:.2f}% positive-minute rate — roughly 1-in-"
+                    f"{round(100/pos_rate):.0f} minutes the option was above its "
+                    f"+{self.trigger_pct:.0f}% trigger level"
+                )
+            else:
+                observations.append(
+                    f"{pos_rate:.2f}% positive-minute rate — moves above "
+                    f"+{self.trigger_pct:.0f}% are infrequent; most contracts "
+                    f"expire without a significant spike"
+                )
+
+            # 2. Peak trigger hour
+            if not hour_counts.empty:
+                peak_hour = int(hour_counts.idxmax())
+                peak_cnt  = int(hour_counts.max())
+                peak_pct  = peak_cnt / n_events * 100
+                if peak_hour >= 15:
+                    observations.append(
+                        f"Late-day concentration: {peak_hour:02d}:xx has the most events "
+                        f"({peak_cnt}, {peak_pct:.0f}%), consistent with gamma acceleration into close"
+                    )
+                elif peak_hour <= 9:
+                    observations.append(
+                        f"Open-bell dominance: 09:xx has the most events "
+                        f"({peak_cnt}, {peak_pct:.0f}%), driven by opening-range volatility"
+                    )
+                else:
+                    observations.append(
+                        f"{peak_hour:02d}:xx has the most events ({peak_cnt}, {peak_pct:.0f}%), "
+                        f"mid-session momentum driving intraday moves"
+                    )
+
+            # 3. Morning distribution (09–11:xx)
+            morning = {h: hour_counts[h] for h in [9, 10, 11] if h in hour_counts.index}
+            if len(morning) >= 2:
+                vals = list(morning.values())
+                spread = max(vals) - min(vals)
+                if spread <= max(vals) * 0.25:
+                    avg_m = sum(vals) / len(vals)
+                    labels = " / ".join(f"{h:02d}:xx" for h in morning)
+                    observations.append(
+                        f"Morning distribution even: {labels} each have "
+                        f"~{avg_m:.0f} events — no single morning hour dominates"
+                    )
+                else:
+                    peak_m = max(morning, key=morning.get)
+                    observations.append(
+                        f"Morning peak at {peak_m:02d}:xx ({morning[peak_m]} events) "
+                        f"while other morning hours are quieter"
+                    )
+
+            # 4. Duration skew
+            if mean_dur > 2 * med_dur:
+                observations.append(
+                    f"Median {med_dur:.0f} min above +{self.trigger_pct:.0f}% but "
+                    f"mean {mean_dur:.1f} min — heavily right-skewed, most events are "
+                    f"brief but a few run for hours"
+                )
+            elif mean_dur > 1.5 * med_dur:
+                observations.append(
+                    f"Median {med_dur:.0f} min above +{self.trigger_pct:.0f}% but "
+                    f"mean {mean_dur:.1f} min — moderately right-skewed; some events "
+                    f"sustain well beyond the typical duration"
+                )
+            else:
+                observations.append(
+                    f"Median {med_dur:.0f} min and mean {mean_dur:.1f} min above "
+                    f"+{self.trigger_pct:.0f}% — relatively symmetric duration distribution"
+                )
+
         else:
             print(f"Events/contract-day:      min=0 median=0.0 max=0")
             print(f"Total >20% minutes:       0")
             print(f"Positive-minute rate:     0.00%")
             print(f"Duration >20% (med/mean): N/A")
+            observations.append("No qualifying events found in the scanned period")
+
+        # Print key observations
+        print(f"\n  Key observations:")
+        for obs in observations:
+            print(f"  - {obs}")
 
         print(f"\nSaved to: {out_path}")
         return out_path
@@ -260,12 +367,16 @@ class OptionsScanner:
         date: str,
         _df: Optional[pd.DataFrame] = None,
     ) -> List[Dict[str, Any]]:
-        """Scan one options feature file for 20%+ moves.
+        """Scan one options feature file for backward-detected 20%+ moves.
+
+        At each bar, checks if the current close is ≥20% above the minimum
+        price seen in the prior ``reference_window_minutes`` bars.
 
         Args:
             feat_path: Path to the feature Parquet file.
             safe_ticker: Filesystem-safe ticker name.
             date: Trading date string (YYYY-MM-DD).
+            _df: Pre-loaded DataFrame (avoids double read when called from scan()).
 
         Returns:
             List of event dicts for this ticker/date.
@@ -284,7 +395,7 @@ class OptionsScanner:
         n = len(close)
 
         events: List[Dict[str, Any]] = []
-        consumed = np.zeros(n, dtype=bool)  # bars already part of a prior event
+        consumed = np.zeros(n, dtype=bool)
 
         # Floor for the reference window start.  After each event ends (price drops
         # below the sustained threshold), this advances to the bar after the drop.
@@ -300,13 +411,11 @@ class OptionsScanner:
                 continue
 
             # Reference window: [max(min_ref_start_bar, t-ref_window) : t]
-            # The floor prevents looking back into a trough that already fired an event.
             ref_start = max(min_ref_start_bar, t - self.ref_window)
             ref_prices = close[ref_start:t]
             if len(ref_prices) == 0:
                 continue
 
-            # Check if current price exceeds any ref_price by trigger_pct
             ref_min = np.nanmin(ref_prices)
             if ref_min <= 0 or np.isnan(ref_min):
                 continue
@@ -323,7 +432,7 @@ class OptionsScanner:
             # Measure durations forward from trigger bar
             above_20_dur = 0
             above_10_dur = 0
-            event_end_bar = n  # default: move runs to end of data
+            event_end_bar = n
             for fwd in range(t, n):
                 consumed[fwd] = True
                 if close[fwd] >= ref_price * trigger_mult:
@@ -331,17 +440,11 @@ class OptionsScanner:
                 if close[fwd] >= ref_price * sustained_mult:
                     above_10_dur += 1
                 else:
-                    # Once it drops below 10% sustained level, stop tracking.
-                    # Advance the reference floor to here so subsequent events
-                    # cannot reuse the low that generated this one.
                     event_end_bar = fwd + 1
                     break
 
-            # Advance reference floor regardless of whether the loop hit the break
-            # (if it ran to end-of-data, event_end_bar == n and no further bars exist).
             min_ref_start_bar = event_end_bar
 
-            # Convert timestamps to ET strings
             def _ts_to_et(ts_ms: int) -> str:
                 try:
                     dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=et_tz)
