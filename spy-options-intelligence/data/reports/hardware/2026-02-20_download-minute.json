@@ -1,0 +1,12 @@
+{
+  "command": "download-minute",
+  "start_time": "2026-02-20T22:25:03.566544+00:00",
+  "end_time": "2026-02-20T23:51:20.499276+00:00",
+  "elapsed_sec": 3840.28,
+  "cpu_pct_avg": 0.05,
+  "mem_rss_start_mb": 111.73,
+  "mem_rss_end_mb": 115.97,
+  "mem_delta_mb": 4.23,
+  "disk_read_mb": 0.0,
+  "disk_write_mb": 0.0
+}

@@ -19,7 +19,7 @@ Complete reference of every module in the platform, what it does, and how module
 
 | Module | Description |
 |--------|-------------|
-| `src/cli.py` | Click-based CLI with 25 commands. The only user-facing entry point — all execution flows start here. |
+| `src/cli.py` | Click-based CLI with 25 commands. The only user-facing entry point — all execution flows start here. See Step 28 notes for the planned `download-day` command (per-date interleaved SPY+options). |
 
 ### Data Sources (`src/data_sources/`)
 

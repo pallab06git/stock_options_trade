@@ -1,0 +1,12 @@
+{
+  "command": "error-fn",
+  "start_time": "2026-02-19T06:51:26.758499+00:00",
+  "end_time": "2026-02-19T06:51:26.758546+00:00",
+  "elapsed_sec": 0.0,
+  "cpu_pct_avg": 49.8,
+  "mem_rss_start_mb": 219.34,
+  "mem_rss_end_mb": 219.34,
+  "mem_delta_mb": 0.0,
+  "disk_read_mb": 0.0,
+  "disk_write_mb": 0.0
+}

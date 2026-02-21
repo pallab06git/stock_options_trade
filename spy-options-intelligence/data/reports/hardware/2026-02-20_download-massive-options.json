@@ -1,0 +1,12 @@
+{
+  "command": "download-massive-options",
+  "start_time": "2026-02-20T23:51:24.678273+00:00",
+  "end_time": "2026-02-20T23:51:25.928080+00:00",
+  "elapsed_sec": 1.25,
+  "cpu_pct_avg": 6.0,
+  "mem_rss_start_mb": 108.86,
+  "mem_rss_end_mb": 126.73,
+  "mem_delta_mb": 17.88,
+  "disk_read_mb": 0.0,
+  "disk_write_mb": 0.0
+}

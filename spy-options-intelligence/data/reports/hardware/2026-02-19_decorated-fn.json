@@ -1,0 +1,12 @@
+{
+  "command": "decorated-fn",
+  "start_time": "2026-02-20T04:11:34.427620+00:00",
+  "end_time": "2026-02-20T04:11:34.427680+00:00",
+  "elapsed_sec": 0.0,
+  "cpu_pct_avg": 50.05,
+  "mem_rss_start_mb": 218.5,
+  "mem_rss_end_mb": 218.5,
+  "mem_delta_mb": 0.0,
+  "disk_read_mb": 0.0,
+  "disk_write_mb": 0.0
+}

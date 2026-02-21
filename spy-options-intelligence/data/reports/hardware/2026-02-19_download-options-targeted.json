@@ -1,0 +1,12 @@
+{
+  "command": "download-options-targeted",
+  "start_time": "2026-02-20T04:13:05.373577+00:00",
+  "end_time": "2026-02-20T04:13:06.200702+00:00",
+  "elapsed_sec": 0.83,
+  "cpu_pct_avg": 5.9,
+  "mem_rss_start_mb": 110.14,
+  "mem_rss_end_mb": 125.16,
+  "mem_delta_mb": 15.02,
+  "disk_read_mb": 0.0,
+  "disk_write_mb": 0.0
+}

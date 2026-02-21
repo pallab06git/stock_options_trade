@@ -35,8 +35,10 @@ Implementation history for SPY Options Intelligence Platform — Phase 1.
 | 24 | 2026-02-19 | `d98f679` | Retry handler refinements — exponential backoff (5xx + 429), auth log+skip, SkippableError | 9 |
 | 25 | 2026-02-19 | `12dbc17` | Options strike selection fix — `_compute_strikes()` with math.ceil/floor, $0.50 increment, 6 new tests | 6 |
 | 26 | 2026-02-20 | `6eeb5e5`, `2d6fde0` | Massive.com options download pipeline — OptionsTickerBuilder, ContractSelector, MassiveOptionsDownloader rewrite, `download-massive-options` CLI, massive package, sources.yaml fix | 116 |
+| 27 | 2026-02-20 | `d7d2b28` | OptionsScanner summary metrics — 8 printed metrics (contract-days, bars, events/cday, >20% mins, rate, duration, hour dist), `_last_scan_stats`, single Parquet read via `_df` param | 9 |
+| 28 | 2026-02-20 | — | Full-year data collection — 241 SPY days (189,742 bars), 68 options dates (Massive ~3-month history limit), per-date parallel watcher; full-year scan: 544 events / 125 cdays / 55.43% rate | — |
 
-**Total**: 763 tests passing + 7 live tests (skipped outside market hours)
+**Total**: 774 tests passing + 7 live tests (skipped outside market hours)
 
 ---
 
@@ -58,6 +60,17 @@ Implementation history for SPY Options Intelligence Platform — Phase 1.
 - Greeks computed per-row as scalars (delta, gamma, theta, vega, rho, IV)
 - `TrainingDataPrep` separated from `Consolidator` — target prices are offline ML prep only
 - `merge_asof` for VIX and news time alignment
+
+### Full-Year Data Collection (Step 28)
+- **Massive free tier history limit**: ~3 months. Apr–Nov 2025 options data returns empty; Mar 2025 (downloaded fresh) and Dec 2025–Feb 2026 are available. Full 12-month coverage requires a Massive plan upgrade.
+- **Per-date parallel watcher**: The sequential "download all SPY → download all options" design is suboptimal. Options only needs the SPY open price (first bar) to compute ATM strikes. Implemented a file watcher that triggers options download the moment each SPY date lands on disk, giving effective per-day parallelism within Polygon's rate-limit wait windows.
+- **Architectural note**: Right design is a unified `download-day` command: SPY API call for day N (1–2s), then options for day N (during the 10s rate-limit backoff), then SPY day N+1. This eliminates two full sequential passes.
+- **Full-year scan results**: 125 contract-days / 44,971 bars / 544 events / 55.43% positive-minute rate / median 8.5 min / mean 45.8 min above +20%. Stats consistent with March-only sample (4.0 median events/cday, ~55% rate).
+
+### OptionsScanner Metrics (Step 27)
+- `_last_scan_stats` populated by `scan()` — passed to `generate_report()` without re-reading files. Avoids double Parquet reads by forwarding the already-loaded DataFrame via optional `_df` parameter to `_scan_single`.
+- Events-per-contract-day includes zero-event days in the min/median/max calculation: `n_zero = contract_days - len(per_cday_series)` zeros appended before `np.median`.
+- Hour distribution uses `pd.to_numeric(..., errors='coerce')` for robustness against empty `trigger_time_et` strings.
 
 ### Massive.com Options Pipeline (Step 26)
 - `OptionsTickerBuilder` is pure math — no config, no I/O, all `@staticmethod`. Strike computation uses `math.ceil / math.floor` with an edge-case guard when opening lands exactly on a boundary (calls must always be strictly above opening).

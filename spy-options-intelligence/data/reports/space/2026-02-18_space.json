@@ -1,0 +1,180 @@
+{
+  "total_bytes": 4633802,
+  "total_files": 79,
+  "tree": {
+    "logs": {
+      "bytes": 0,
+      "files": 1
+    },
+    "logs/schema/drift": {
+      "bytes": 8757,
+      "files": 9
+    },
+    "logs/heartbeat": {
+      "bytes": 263,
+      "files": 2
+    },
+    "logs/execution": {
+      "bytes": 2017095,
+      "files": 5
+    },
+    "logs/errors": {
+      "bytes": 31211,
+      "files": 5
+    },
+    "logs/performance": {
+      "bytes": 0,
+      "files": 1
+    },
+    "processed": {
+      "bytes": 0,
+      "files": 1
+    },
+    "processed/consolidated": {
+      "bytes": 0,
+      "files": 1
+    },
+    "processed/features/spy": {
+      "bytes": 1783722,
+      "files": 19
+    },
+    "processed/features/options/O_SPY250305C00605000": {
+      "bytes": 11887,
+      "files": 1
+    },
+    "processed/partitioned": {
+      "bytes": 0,
+      "files": 1
+    },
+    "raw": {
+      "bytes": 0,
+      "files": 1
+    },
+    "raw/spy": {
+      "bytes": 778700,
+      "files": 20
+    },
+    "raw/spy/data/logs/execution": {
+      "bytes": 0,
+      "files": 1
+    },
+    "raw/spy/data/logs/errors": {
+      "bytes": 0,
+      "files": 1
+    },
+    "raw/vix": {
+      "bytes": 0,
+      "files": 1
+    },
+    "raw/options": {
+      "bytes": 0,
+      "files": 1
+    },
+    "raw/news": {
+      "bytes": 0,
+      "files": 1
+    },
+    "reports/hardware": {
+      "bytes": 2167,
+      "files": 7
+    }
+  },
+  "total_mb": 4.419,
+  "tree_mb": {
+    "logs": {
+      "bytes": 0,
+      "mb": 0.0,
+      "files": 1
+    },
+    "logs/schema/drift": {
+      "bytes": 8757,
+      "mb": 0.008,
+      "files": 9
+    },
+    "logs/heartbeat": {
+      "bytes": 263,
+      "mb": 0.0,
+      "files": 2
+    },
+    "logs/execution": {
+      "bytes": 2017095,
+      "mb": 1.924,
+      "files": 5
+    },
+    "logs/errors": {
+      "bytes": 31211,
+      "mb": 0.03,
+      "files": 5
+    },
+    "logs/performance": {
+      "bytes": 0,
+      "mb": 0.0,
+      "files": 1
+    },
+    "processed": {
+      "bytes": 0,
+      "mb": 0.0,
+      "files": 1
+    },
+    "processed/consolidated": {
+      "bytes": 0,
+      "mb": 0.0,
+      "files": 1
+    },
+    "processed/features/spy": {
+      "bytes": 1783722,
+      "mb": 1.701,
+      "files": 19
+    },
+    "processed/features/options/O_SPY250305C00605000": {
+      "bytes": 11887,
+      "mb": 0.011,
+      "files": 1
+    },
+    "processed/partitioned": {
+      "bytes": 0,
+      "mb": 0.0,
+      "files": 1
+    },
+    "raw": {
+      "bytes": 0,
+      "mb": 0.0,
+      "files": 1
+    },
+    "raw/spy": {
+      "bytes": 778700,
+      "mb": 0.743,
+      "files": 20
+    },
+    "raw/spy/data/logs/execution": {
+      "bytes": 0,
+      "mb": 0.0,
+      "files": 1
+    },
+    "raw/spy/data/logs/errors": {
+      "bytes": 0,
+      "mb": 0.0,
+      "files": 1
+    },
+    "raw/vix": {
+      "bytes": 0,
+      "mb": 0.0,
+      "files": 1
+    },
+    "raw/options": {
+      "bytes": 0,
+      "mb": 0.0,
+      "files": 1
+    },
+    "raw/news": {
+      "bytes": 0,
+      "mb": 0.0,
+      "files": 1
+    },
+    "reports/hardware": {
+      "bytes": 2167,
+      "mb": 0.002,
+      "files": 7
+    }
+  }
+}

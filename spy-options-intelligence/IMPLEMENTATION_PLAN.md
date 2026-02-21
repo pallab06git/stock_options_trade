@@ -289,11 +289,46 @@
 - [x] Live test: 21 trading days of March 2025 downloaded — 42 contracts, 3,541 bars in 26 seconds
 - [x] Full test suite: 763 passing + 7 skipped
 
+## Step 27: OptionsScanner Summary Metrics ✅
+- [x] Add `_last_scan_stats` dict to `OptionsScanner.__init__` to persist contract-days + total-bars across scan/report calls
+- [x] Update `scan()` to load each Parquet once, count contract-days and bars, store in `_last_scan_stats`, pass pre-loaded DataFrame to `_scan_single` via optional `_df` param (avoids double reads)
+- [x] Replace `generate_report()` console output with 8 required metrics:
+  - Contract-days scanned + total minute bars
+  - Total events
+  - Events per contract-day: min / median / max (zeros included for no-event days)
+  - Total >20% minutes, positive-minute rate (%)
+  - Duration above 20%: median / mean
+  - Event distribution by trigger hour (ET) — ASCII bar chart
+- [x] 9 new unit tests (TestScanStats ×3, TestGenerateReportMetrics ×6)
+- [x] Full test suite: 774 passing + 7 skipped
+
+## Step 28: Full-Year Data Collection & Scan ✅
+- [x] Download SPY minute bars for full year: Mar 2025 → Feb 2026
+  - 241 trading days, 189,742 bars, ~10 MB raw
+  - CLI: `download-minute --ticker SPY --start-date 2025-04-01 --end-date 2026-02-19 --resume`
+- [x] Download options minute bars (Massive.com free tier)
+  - 68 unique dates, 124 contract parquets, ~3 MB raw
+  - Per-date parallel watcher: as each SPY date lands, immediately triggers options download for that date
+  - ⚠ Massive free tier limitation confirmed: ~3 months of options history only
+    Coverage: Mar 2025 + Dec 2025 → Feb 2026; Apr–Nov 2025 returns empty
+- [x] Feature engineering: 239 SPY feature files + 125 options feature files
+- [x] Full-year scan (Mar 2025 → Feb 2026):
+  - 125 contract-days scanned, 44,971 minute bars
+  - 544 events detected (20%+ intraday moves)
+  - Events/contract-day: min=0, median=4.0, max=12
+  - Total >20% minutes: 24,929 (55.43% positive-minute rate)
+  - Duration above 20%: median 8.5 min / mean 45.8 min
+  - Event peak hours: 09:xx–10:xx (morning) and 15:xx (gamma into close)
+- [x] Architectural insight documented: per-day interleaved SPY+options download needed (options only requires SPY open price, not full day; rate-limit wait window should be used for parallel options fetch)
+
 ## Future
+- [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
+- [ ] VIX data integration (upgrade massive.com plan)
+- [ ] Per-day interleaved `download-day` command (SPY open → options, parallel within rate-limit window)
 - [ ] LSTM model training
 - [ ] Signal validator implementation
 - [ ] MLflow integration
 - [ ] Backtesting framework
 
 ---
-**Total tests: 763 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-20**
+**Total tests: 774 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-20**

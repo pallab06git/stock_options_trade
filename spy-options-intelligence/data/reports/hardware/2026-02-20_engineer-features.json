@@ -1,0 +1,12 @@
+{
+  "command": "engineer-features",
+  "start_time": "2026-02-20T23:58:41.043178+00:00",
+  "end_time": "2026-02-20T23:58:43.521011+00:00",
+  "elapsed_sec": 2.48,
+  "cpu_pct_avg": 52.1,
+  "mem_rss_start_mb": 100.17,
+  "mem_rss_end_mb": 121.09,
+  "mem_delta_mb": 20.92,
+  "disk_read_mb": 0.0,
+  "disk_write_mb": 0.0
+}

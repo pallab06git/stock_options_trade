@@ -529,24 +529,46 @@ stats = fe.engineer("2025-03-04")
 
 **Module**: `src.processing.options_scanner`
 
-Scan consolidated options data for significant moves (≥20% threshold) and emit a summary CSV of events.
+Scan options feature files for intraday moves ≥20% relative to a rolling reference window minimum. Emits a CSV report and prints 8 summary metrics to console.
 
 ```python
 OptionsScanner(config: Dict[str, Any])
 ```
 
+**Config keys** (`config["pipeline_v2"]["scanner"]`): `reference_window_minutes` (default 120), `trigger_threshold_pct` (default 20.0), `sustained_threshold_pct` (default 10.0).
+
+**State**: `_last_scan_stats: Dict[str, Any]` — populated by `scan()`, consumed by `generate_report()`. Keys: `contract_days`, `total_bars`.
+
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `scan` | `(date: str) -> Dict[str, Any]` | Scan one day; returns event count and output path |
-| `scan_range` | `(start_date: str, end_date: str) -> Dict[str, Any]` | Scan a date range; aggregates events across all days |
+| `scan` | `(start_date: str, end_date: str) -> List[Dict]` | Scan all options feature Parquets in range; updates `_last_scan_stats` |
+| `generate_report` | `(events, start_date, end_date) -> Path` | Write CSV + print 8 metrics: contract-days, bars, events, events/cday (min/med/max), >20% mins, rate%, duration med/mean, hour distribution |
+| `load_reports` | `(start_date=None, end_date=None) -> DataFrame` | Load all movement CSVs, optionally filtered by date |
+| `_scan_single` | `(feat_path, safe_ticker, date, _df=None) -> List[Dict]` | Scan one Parquet; accepts pre-loaded DataFrame to avoid double reads |
+
+**Console output** (from `generate_report`):
+```
+Contract-days scanned:    125
+Total minute bars:        44971
+Total events:             544
+Events/contract-day:      min=0 median=4.0 max=12
+Total >20% minutes:       24929
+Positive-minute rate:     55.43%
+Duration >20% (med/mean): 8.5 / 45.8 min
+
+Event distribution by trigger hour (ET):
+  09:xx   104  ###########################
+  10:xx   115  ##############################
+```
 
 **Example**:
 ```python
 from src.processing.options_scanner import OptionsScanner
 
 scanner = OptionsScanner(config)
-stats = scanner.scan_range("2025-03-01", "2025-03-31")
-# Output: data/processed/scanner/events.csv
+events = scanner.scan("2025-03-03", "2026-02-19")
+path = scanner.generate_report(events, "2025-03-03", "2026-02-19")
+# Output: data/reports/options_movement/2025-03-03_2026-02-19_movement.csv
 ```
 
 ---
