@@ -107,6 +107,8 @@ _NON_FEATURE_COLS: frozenset = frozenset(
         "min_loss_120m",
         "max_gain_pct",
         "time_to_max_min",
+        # lookahead feature: uses total-day volume (future data) as denominator
+        "opt_vol_pct_cumday",
     }
 )
 

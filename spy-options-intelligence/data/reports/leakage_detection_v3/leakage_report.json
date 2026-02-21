@@ -1,0 +1,60 @@
+{
+  "overall_verdict": "NO LEAKAGE",
+  "safe_to_proceed": true,
+  "critical_issues": [],
+  "warnings": [],
+  "test_results": {
+    "random_data_test": {
+      "leakage_detected": false,
+      "n_samples": 1000,
+      "n_features": 65,
+      "high_confidence_count": 0,
+      "medium_confidence_count": 5,
+      "low_confidence_count": 995,
+      "avg_confidence": 0.5037956833839417,
+      "max_confidence": 0.6372143030166626,
+      "percentile_95": 0.570355236530304,
+      "high_confidence_threshold": 0.8,
+      "max_acceptable_signals": 5,
+      "verdict": "PASS",
+      "explanation": "Model generated only 0 high-confidence signal(s) on 1000 random samples (threshold \u22645). Model is uncertain on noise \u2014 consistent with no leakage."
+    },
+    "feature_audit": {
+      "suspicious_patterns": [],
+      "leakage_likely": false,
+      "pattern_count": 0
+    },
+    "known_lookahead_check": {
+      "leakage_detected": false,
+      "lookahead_features": [],
+      "features_checked": 65
+    },
+    "target_in_features": {
+      "leakage_detected": false,
+      "contaminated_cols": [],
+      "target_cols_checked": [
+        "max_gain_120m",
+        "max_gain_pct",
+        "min_loss_120m",
+        "target",
+        "time_to_max_min"
+      ],
+      "features_inspected": 65
+    },
+    "temporal_ordering": {
+      "ordering_valid": true,
+      "violations": 0,
+      "total_rows": 172068
+    },
+    "contamination_check": {
+      "contamination_detected": false,
+      "overlap_dates": [],
+      "overlap_count": 0,
+      "gap_days": 54,
+      "train_start": "2025-03-03",
+      "train_end": "2025-10-30",
+      "test_start": "2025-12-23",
+      "test_end": "2026-02-19"
+    }
+  }
+}

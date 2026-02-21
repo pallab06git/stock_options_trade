@@ -26,8 +26,8 @@ Feature groups
   Contract (6):       strike, moneyness, log_moneyness, time_to_expiry_days,
                       contract_type, is_0dte
   IV (4):             implied_volatility, iv_change_1m, iv_change_5m, iv_change_open
-  Cross-asset (5):    opt_vs_spy_return_1m, opt_vwap_dist_pct,
-                      spy_vol_regime, opt_vol_pct_cumday, transactions_ratio
+  Cross-asset (4):    opt_vs_spy_return_1m, opt_vwap_dist_pct,
+                      spy_vol_regime, transactions_ratio
   Position (1):       opt_bar_count
 
 Target columns
@@ -597,13 +597,6 @@ class MLFeatureEngineer:
             df["spy_vol_regime"] = df["spy_volume"] / ma30_safe
         else:
             df["spy_vol_regime"] = np.nan
-
-        # Option cumulative volume as fraction of total day volume
-        day_vol_total = opt_vol.sum()
-        if day_vol_total > 0:
-            df["opt_vol_pct_cumday"] = opt_vol.cumsum() / day_vol_total
-        else:
-            df["opt_vol_pct_cumday"] = np.nan
 
         # Transactions ratio: option transactions / SPY transactions
         opt_tx = df.get("transactions", pd.Series(np.nan, index=df.index))

@@ -1,0 +1,487 @@
+{
+  "threshold": 0.75,
+  "n_models_compared": 2,
+  "model_names": [
+    "xgboost_v2",
+    "xgboost_v3_clean"
+  ],
+  "total_unique_signals": 67,
+  "all_models_agree": 0,
+  "majority_agree": 0,
+  "overlap_breakdown": {
+    "1_models": 67
+  },
+  "detailed_overlaps": {
+    "1": [
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:30 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 14:33 ET",
+        "models": [
+          "xgboost_v3_clean"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:19 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:16 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:09 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:23 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:29 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:48 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 15:05 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 14:47 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:07 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260219C00686000",
+        "entry_time": "2026-02-18 09:34 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:06 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:28 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:44 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 14:34 ET",
+        "models": [
+          "xgboost_v3_clean"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 14:50 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:39 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260219C00686000",
+        "entry_time": "2026-02-18 09:32 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 15:10 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:45 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 14:08 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:02 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:36 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:01 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:25 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 14:58 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 15:04 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:35 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:46 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:31 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 14:46 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:37 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:34 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 14:18 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:42 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:47 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:32 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 15:02 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 14:48 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:20 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:03 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 14:56 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:43 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:21 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 14:45 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:49 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 14:47 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260127P00688000",
+        "entry_time": "2026-01-26 15:32 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:38 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:33 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:41 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260127P00688000",
+        "entry_time": "2026-01-26 15:30 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:17 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:08 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 14:20 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 14:57 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:26 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260127P00688000",
+        "entry_time": "2026-01-26 15:35 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260127P00688000",
+        "entry_time": "2026-01-26 15:31 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:24 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:22 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:40 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 15:07 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:18 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260130C00698000",
+        "entry_time": "2026-01-29 15:27 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      },
+      {
+        "contract_symbol": "O:SPY260203P00687000",
+        "entry_time": "2026-02-02 15:03 ET",
+        "models": [
+          "xgboost_v2"
+        ]
+      }
+    ]
+  }
+}

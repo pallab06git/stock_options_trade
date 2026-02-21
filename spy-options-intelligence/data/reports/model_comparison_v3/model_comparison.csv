@@ -1,0 +1,3 @@
+Model,Opt Score,Signals (80%),Win Rate,Calls %,Puts %,Avg Win $,Avg Loss $,Net Profit,Meets Target
+xgboost_v2,0.0,30,100.0%,100.0%,0.0%,"$3,746",$0,"$+112,270",YES
+xgboost_v3_clean,0.0,0,0.0%,0.0%,0.0%,$0,$0,$+0,NO
