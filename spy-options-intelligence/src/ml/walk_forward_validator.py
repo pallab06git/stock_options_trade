@@ -41,6 +41,7 @@ import xgboost as xgb
 from sklearn.metrics import confusion_matrix
 
 from src.ml.data_balancer import undersample_majority
+from src.ml.trade_simulator import TradeSimulator
 from src.ml.train_xgboost import _NON_FEATURE_COLS, load_features
 
 
@@ -94,11 +95,13 @@ class WalkForwardValidator:
         xgb_params: Optional[Dict[str, Any]] = None,
         train_window_months: int = 3,
         test_window_months: int = 1,
+        simulator: Optional[TradeSimulator] = None,
     ) -> None:
         self.features_dir = Path(features_dir)
         self.xgb_params: Dict[str, Any] = dict(xgb_params or _DEFAULT_XGB_PARAMS)
         self.train_window_months = train_window_months
         self.test_window_months = test_window_months
+        self.simulator = simulator
 
     # ------------------------------------------------------------------
     # Public API
@@ -288,6 +291,16 @@ class WalkForwardValidator:
             else 0.0
         )
 
+        # ── Trade simulation (optional) ───────────────────────────────────
+        trade_report: Optional[Dict[str, Any]] = None
+        if self.simulator is not None:
+            sim_trades = self.simulator.simulate_period(
+                test_df, y_proba, threshold, model, feature_cols
+            )
+            trade_report = self.simulator.generate_monthly_report(
+                sim_trades, test_start[:7]
+            )
+
         return {
             "status": "SUCCESS",
             "train_period": f"{train_start} → {train_end}",
@@ -312,6 +325,8 @@ class WalkForwardValidator:
             "tp_avg_gain_pct": tp_avg_gain,
             "fp_avg_loss_pct": fp_avg_loss,
             "expected_value_pct": expected_value,
+            # Trade simulation results (None if no simulator attached)
+            "trade_report": trade_report,
         }
 
     def run_validation(self, threshold: float = 0.67) -> Dict[str, Any]:
@@ -356,6 +371,27 @@ class WalkForwardValidator:
         signals = [r["total_signals"] for r in successful]
         evs = [r["expected_value_pct"] for r in successful]
 
+        # ── Simulation aggregation (optional) ────────────────────────────
+        simulation: Optional[Dict[str, Any]] = None
+        trade_reports = [
+            r["trade_report"]
+            for r in successful
+            if r.get("trade_report") is not None
+            and r["trade_report"].get("total_trades", 0) > 0
+        ]
+        if trade_reports:
+            total_trades = sum(rep["total_trades"] for rep in trade_reports)
+            total_wins = sum(rep["winning_trades"] for rep in trade_reports)
+            total_net = sum(rep["net_profit_after_fees_usd"] for rep in trade_reports)
+            simulation = {
+                "months_simulated": len(trade_reports),
+                "total_trades": total_trades,
+                "total_wins": total_wins,
+                "total_losses": total_trades - total_wins,
+                "overall_win_rate": total_wins / total_trades if total_trades > 0 else 0.0,
+                "total_net_profit_usd": round(total_net, 2),
+            }
+
         return {
             "status": "SUCCESS",
             "threshold": threshold,
@@ -377,6 +413,8 @@ class WalkForwardValidator:
             "ev_mean": float(np.mean(evs)),
             "ev_median": float(np.median(evs)),
             "ev_std": float(np.std(evs)),
+            # Simulation totals (None if no simulator attached)
+            "simulation": simulation,
             # Per-split detail
             "splits": results,
         }

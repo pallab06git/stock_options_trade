@@ -1152,11 +1152,41 @@ def explain_signal(model_path, features_file, ticker, row_index, threshold):
     help="Test window size in calendar months.  Also the slide step.",
 )
 @click.option(
+    "--position-size",
+    default=12_500.0,
+    type=float,
+    show_default=True,
+    help="USD position size per trade for simulation (default $12,500).",
+)
+@click.option(
+    "--target-gain",
+    default=30.0,
+    type=float,
+    show_default=True,
+    help="Take-profit percentage for simulation (default 30%).",
+)
+@click.option(
+    "--stop-loss",
+    default=-12.0,
+    type=float,
+    show_default=True,
+    help="Stop-loss percentage for simulation (default -12%).",
+)
+@click.option(
+    "--show-trades",
+    is_flag=True,
+    default=False,
+    help="Print individual trade details for each test month.",
+)
+@click.option(
     "--output",
     default=None,
     help="Directory to save the JSON results (default: data/reports/walk_forward).",
 )
-def walk_forward(config_dir, threshold, train_months, test_months, output):
+def walk_forward(
+    config_dir, threshold, train_months, test_months,
+    position_size, target_gain, stop_loss, show_trades, output,
+):
     """Walk-forward validation to assess model stability across time.
 
     Re-trains XGBoost from scratch on each rolling window and evaluates on
@@ -1176,6 +1206,7 @@ def walk_forward(config_dir, threshold, train_months, test_months, output):
     import json as _json
     from pathlib import Path as _Path
 
+    from src.ml.trade_simulator import TradeSimulator
     from src.ml.walk_forward_validator import WalkForwardValidator
 
     try:
@@ -1194,14 +1225,23 @@ def walk_forward(config_dir, threshold, train_months, test_months, output):
         click.echo(f"Threshold:      {threshold:.2f}")
         click.echo(f"Train window:   {train_months} month(s)")
         click.echo(f"Test window:    {test_months} month(s)")
+        click.echo(f"Position size:  ${position_size:,.0f} per trade")
+        click.echo(f"Target gain:    +{target_gain:.0f}%  |  Stop loss: {stop_loss:.0f}%")
         click.echo(
             "NOTE: re-trains XGBoost for each split — this may take several minutes\n"
+        )
+
+        simulator = TradeSimulator(
+            position_size_usd=position_size,
+            target_gain_pct=target_gain,
+            stop_loss_pct=stop_loss,
         )
 
         validator = WalkForwardValidator(
             features_dir=features_dir,
             train_window_months=train_months,
             test_window_months=test_months,
+            simulator=simulator,
         )
 
         # Show date splits preview
@@ -1313,6 +1353,113 @@ def walk_forward(config_dir, threshold, train_months, test_months, output):
                 f"Existing backtest (91.9%) is {-diff:.1%} below walk-forward mean "
                 f"({mean_p:.1%}) — model may perform better on average"
             )
+
+        # ── Trade Simulation Summary ────────────────────────────────────
+        click.echo("")
+        click.echo("--- Trade Simulation ---")
+        click.echo(
+            f"Position size:  ${position_size:,.0f} per trade  |  "
+            f"Target: +{target_gain:.0f}%  |  Stop: {stop_loss:.0f}%"
+        )
+        click.echo("")
+
+        sim_agg = summary.get("simulation")
+        if sim_agg and sim_agg.get("total_trades", 0) > 0:
+            net = sim_agg["total_net_profit_usd"]
+            sign = "+" if net >= 0 else ""
+            click.echo(f"  Months with trades:  {sim_agg['months_simulated']}")
+            click.echo(f"  Total trades:        {sim_agg['total_trades']}")
+            click.echo(
+                f"  Win rate:            {sim_agg['overall_win_rate']:.1%}  "
+                f"({sim_agg['total_wins']} wins / {sim_agg['total_losses']} losses)"
+            )
+            click.echo(f"  Total net profit:    {sign}${net:,.0f}")
+        else:
+            click.echo("  No trades executed (all months below threshold or zero-price entries)")
+
+        # Per-month table
+        click.echo("")
+        click.echo(
+            f"  {'Month':>8}  {'Trades':>7}  {'Win%':>7}  {'Net P&L':>12}  "
+            f"{'ROI':>7}  {'Calls':>5}  {'Puts':>5}"
+        )
+        click.echo("  " + "-" * 62)
+        for r in summary["splits"]:
+            if r["status"] != "SUCCESS":
+                continue
+            rep = r.get("trade_report")
+            month = r["test_month"]
+            if rep and rep["total_trades"] > 0:
+                n = rep["total_trades"]
+                wr = rep["win_rate"]
+                net_m = rep["net_profit_after_fees_usd"]
+                roi = rep["roi_pct"]
+                calls = rep["calls_traded"]
+                puts = rep["puts_traded"]
+                sign_m = "+" if net_m >= 0 else ""
+                click.echo(
+                    f"  {month:>8}  {n:>7}  {wr:>6.1%}  "
+                    f"{sign_m}${net_m:>10,.0f}  {roi:>+6.2f}%  "
+                    f"{calls:>5}  {puts:>5}"
+                )
+            else:
+                click.echo(
+                    f"  {month:>8}  {'0':>7}  {'n/a':>7}  {'$0':>12}  {'n/a':>7}  "
+                    f"{'--':>5}  {'--':>5}"
+                )
+
+        # Individual trade logs (--show-trades)
+        if show_trades:
+            click.echo("")
+            click.echo("--- Individual Trades ---")
+            for r in summary["splits"]:
+                if r["status"] != "SUCCESS":
+                    continue
+                rep = r.get("trade_report")
+                if not rep or rep["total_trades"] == 0:
+                    continue
+                month_label = r["test_month"]
+                click.echo(f"\n{'=' * 70}")
+                click.echo(f"  {month_label}  —  {rep['total_trades']} trades")
+                click.echo(f"{'=' * 70}")
+                for t in rep["trades"]:
+                    click.echo(f"\nTrade #{t['trade_id']}")
+                    click.echo("─" * 70)
+                    click.echo("  Entry:")
+                    click.echo(f"    Date/Time:          {t['entry_time']}")
+                    click.echo(f"    Contract:           {t['contract_symbol']}")
+                    click.echo(
+                        f"    Entry price:        ${t['entry_price_per_share']:.2f}/share"
+                    )
+                    click.echo(
+                        f"    Cost per contract:  ${t['cost_per_contract_entry']:,.0f}  "
+                        f"(100 shares)"
+                    )
+                    click.echo(f"    Contracts:          {t['num_contracts']}")
+                    click.echo(
+                        f"    Actual position:    ${t['actual_position_size']:,.0f}"
+                    )
+                    click.echo(f"    Confidence:         {t['confidence']:.1%}")
+                    click.echo("  Exit:")
+                    click.echo(f"    Date/Time:          {t['exit_time']}")
+                    click.echo(
+                        f"    Exit price:         ${t['exit_price_per_share']:.2f}/share"
+                    )
+                    click.echo(
+                        f"    Cost per contract:  ${t['cost_per_contract_exit']:,.0f}  "
+                        f"(100 shares)"
+                    )
+                    click.echo(f"    Reason:             {t['exit_reason']}")
+                    click.echo(f"    Time in trade:      {t['time_in_trade_minutes']:.1f} min")
+                    pnl = t["profit_loss_usd"]
+                    pct = t["profit_loss_pct"]
+                    sign_t = "+" if (pnl or 0) >= 0 else ""
+                    result_label = "WIN" if t["is_winner"] else "LOSS"
+                    click.echo(
+                        f"  Result: {result_label}  "
+                        f"{sign_t}${pnl:,.0f}  ({sign_t}{pct:.1f}%)"
+                    )
+                    click.echo("─" * 70)
 
         # ── Save results ───────────────────────────────────────────────
         out_path = out_dir / "walk_forward_results.json"

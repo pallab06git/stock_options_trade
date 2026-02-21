@@ -670,6 +670,59 @@
   - Splits with few signals (Jan: 2 signals, Jun: 0) are not statistically meaningful
   - **Verdict**: Weak POC at 3-month rolling window; full-year training is more reliable approach
 
+## Step 44: Detailed Trade-by-Trade Simulation ✅
+- [x] Create `src/ml/trade_simulator.py`
+  - `Trade(trade_id, entry_time, contract_symbol, entry_price_per_share, position_size_usd, confidence, trigger_factors)`
+    - `SHARES_PER_CONTRACT = 100` (US equity options multiplier)
+    - `cost_per_contract = entry_price_per_share × 100`
+    - `num_contracts = floor(position_size_usd / cost_per_contract)`
+    - `actual_position_size = num_contracts × cost_per_contract`
+    - `close_trade(exit_time, exit_price_per_share, exit_reason, time_in_trade_minutes)`
+      - `profit_loss_usd = (exit_cost - entry_cost) × num_contracts`
+      - `profit_loss_pct = (exit_cost - entry_cost) / entry_cost × 100`
+    - `to_dict()` → JSON-serialisable dict of all trade fields
+  - `TradeSimulator(position_size_usd=12500, target_gain_pct=30, stop_loss_pct=-12, max_time_minutes=120, fee_per_trade_usd=4)`
+    - `simulate_from_label_row(row, trade_id, confidence, trigger_factors)` → Optional[Trade]
+      - Uses `close` (entry price/share), `max_gain_120m` (%), `min_loss_120m` (%) from feature CSV
+      - Exit priority: both target+stop → stop first (conservative); target only → Target hit; stop only → Stop-loss; neither → Time limit
+      - Returns None if entry_price=0/NaN or num_contracts<1
+    - `simulate_period(df, predictions, threshold, model, feature_cols)` → List[Trade]
+      - Fires on rows where predictions >= threshold; populates trigger_factors from model.feature_importances_
+    - `generate_monthly_report(trades, month_str)` → Dict
+      - Returns: total_trades, win_rate, gross P&L, net P&L, fees, ROI, avg/median profit/loss, calls/puts, exit_reasons, individual trade dicts
+    - `print_trade_log(trade, trade_num)` — full trade lifecycle to stdout
+    - `print_monthly_summary(report)` — summary table with target assessment ($15k/$20k/$25k)
+  - `_extract_contract_type(ticker)` → 'C' | 'P' | 'X' helper
+- [x] Integrate `TradeSimulator` into `WalkForwardValidator`
+  - Constructor: `simulator: Optional[TradeSimulator] = None` parameter
+  - `evaluate_split()`: calls `simulator.simulate_period()` + `generate_monthly_report()` after computing y_proba; adds `trade_report` to result dict
+  - `run_validation()`: aggregates monthly reports → `simulation` dict (months_simulated, total_trades, win_rate, total_net_profit_usd)
+- [x] Update `walk-forward` CLI in `src/ml/cli.py`
+  - New options: `--position-size` (12500), `--target-gain` (30), `--stop-loss` (-12), `--show-trades` (flag)
+  - Creates `TradeSimulator` → passes to `WalkForwardValidator`
+  - Prints "Trade Simulation" section: monthly breakdown table + aggregate totals
+  - `--show-trades`: prints per-trade details (entry/exit times, prices, contracts, P&L)
+- [x] Unit tests: 48 tests in `tests/unit/test_trade_simulator.py`
+  - TestSharesPerContract ×2
+  - TestTradeConstruction ×7: basics, cost_per_contract, num_contracts flooring, actual_position, zero price, trigger factors, None exits
+  - TestTradeCloseTrade ×6: winner/loser P&L math, explicit time, timestamp parse, zero contracts, exit_cost_per_contract
+  - TestTradeToDict ×2: required keys, JSON-serialisable
+  - TestExtractContractType ×4: call, put, unknown, short ticker
+  - TestTradeSimulatorConstruction ×2
+  - TestSimulateFromLabelRow ×10: target hit, stop hit, both (stop first), time limit, zero/negative/NaN price, too expensive, entry/exit time format
+  - TestSimulatePeriod ×6: no signals, all signals, partial, skip zero price, trigger_factors with model, returns Trade objects
+  - TestGenerateMonthlyReport ×9: empty, single winner/loser, mixed, required keys, fees, calls/puts, exit reasons, trades list
+- [x] Full test suite: 1353 passing + 7 skipped
+- [x] Live walk-forward simulation results (xgboost_v2 params, threshold=0.67, $12,500 position, +30% target, -12% stop):
+  - 8 splits (Jun 2025 – Jan 2026), 7 months with trades, 1 month (Jun) with 0 signals
+  - **Total trades: 2,875  |  Win rate: 33.9%**
+  - **Total net profit: +$614,467 across all test months**
+  - Best month: Sep 2025 (+$383K, 38.7% win), Oct 2025 (+$273K, 44.8% win)
+  - Worst month: Jul 2025 (-$134K, 25.9% win) — low precision month inflates losses
+  - Key insight: strategy is profitable despite 33.9% win rate because gains (+30%) dwarf losses (-12%) by 2.5×
+  - Call/put breakdown: roughly even (1,419 calls / 1,456 puts across all months)
+  - Note: Simulation uses label-based exits (max_gain_120m/min_loss_120m) — approximates real P&L without tick-level data
+
 ## Future
 - [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
 - [ ] VIX data integration (upgrade massive.com plan)
