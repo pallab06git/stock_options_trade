@@ -104,6 +104,7 @@ _NON_FEATURE_COLS: frozenset = frozenset(
         # label columns — must never leak into features
         "target",
         "max_gain_120m",
+        "min_loss_120m",
         "max_gain_pct",
         "time_to_max_min",
     }
@@ -336,12 +337,19 @@ class XGBoostTrainer:
 
         # ── 5. Fit ───────────────────────────────────────────────────────
         model = xgb.XGBClassifier(**self.xgb_params)
-        model.fit(
-            X_train,
-            y_train,
-            eval_set=[(X_val, y_val)],
-            verbose=False,
-        )
+
+        fit_kwargs: dict = {"eval_set": [(X_val, y_val)], "verbose": False}
+        if self._balancer.balance_method == "class_weights":
+            cw = self._balancer.get_class_weights(train_balanced)
+            fit_kwargs["sample_weight"] = np.array(
+                [cw[int(label)] for label in y_train], dtype=np.float32
+            )
+            logger.info(
+                f"Applying class weights to fit: "
+                + ", ".join(f"class {k}: {v:.4f}" for k, v in sorted(cw.items()))
+            )
+
+        model.fit(X_train, y_train, **fit_kwargs)
         logger.info(
             f"XGBoost fitted | best_iteration={model.best_iteration} | "
             f"best_score={model.best_score:.4f}"

@@ -488,6 +488,67 @@
      `src.ml.backtest.ModelBacktester`)
 - [x] Full test suite: 1088 passing + 7 skipped
 
+## Step 39: High-Precision Threshold & Speed Benchmarking ✅
+- [x] Add `min_loss_120m` to `_compute_targets()` in `src/processing/ml_feature_engineer.py`
+  - Worst % drawdown in 120-min forward window from each bar's entry price
+  - Added to `_NON_FEATURE_COLS` frozenset in `src/ml/train_xgboost.py` (prevents data leakage)
+  - Added to `_TRADE_META_COLS` list in `src/ml/backtest.py` (included in trades CSV output)
+- [x] Create `src/ml/evaluate.py`
+  - `find_optimal_threshold_for_precision(model, X_val, y_val, min_precision, step)` → dict
+  - Sweeps 0.50–0.99 on validation set; returns: achievable, optimal_threshold,
+    achieved_precision, achieved_recall, n_signals, signal_rate, analysis_df
+  - Returns `achievable=False` + best found precision when requirement unachievable
+- [x] Create `src/ml/benchmark.py`
+  - `benchmark_prediction_speed(model, sample_features, n_iterations)` → dict
+  - 20-call warmup + n timed calls; returns mean/p50/p95/p99/max latency in ms
+  - meets_100ms_requirement flag
+- [x] Add 3 new CLI commands + `--threshold` override to backtest in `src/ml/cli.py`:
+  - `find-threshold` — sweeps val set for min_precision; prints sweep table + recommendation
+  - `benchmark-speed` — times single-sample predict_proba (zero-vector); prints latency stats
+  - `backtest --threshold` — override artifact's stored threshold for high-precision testing
+- [x] Add `evaluation.*` and `performance.*` sections to `config/ml_settings.yaml`
+- [x] Unit tests: 21 tests for evaluate.py + 17 tests for benchmark.py = 38 new tests
+- [x] Real results (xgboost_v2, test split 2025-12-23 → 2026-02-19):
+  - At threshold=0.67: 307 signals | 282 TP | 25 FP | precision=91.9% | lift=2.94x
+  - Speed: mean=0.20ms, p99=0.40ms (247× under 100ms requirement)
+- [x] Full test suite: 1126 passing + 7 skipped
+
+## Step 40: False Positive Severity Analysis ✅
+- [x] Create `src/ml/error_analyzer.py` — `PredictionErrorAnalyzer` class
+  - `load_false_positives(trades_path)` → pd.DataFrame
+    - Reads per-trade CSV from `ml backtest`; filters `is_true_positive == False`
+    - Validates required columns: is_true_positive, min_loss_120m, max_gain_120m
+  - `generate_risk_report(fp_df)` → dict
+    - total_false_positives, pct_price_never_below_entry
+    - Loss distribution: mean/median/p25/p50/p75/p90/max_worst_drawdown_pct
+    - Loss buckets: pct_0_to_5pct, pct_5_to_10pct, pct_10_to_15pct, pct_15_to_20pct, pct_over_20pct
+    - Stop trigger rates: stop_5/10/15/20pct_triggered_pct
+    - Recommendations: stop_loss_conservative_pct (p75), moderate (p90), aggressive (p95)
+  - `stop_loss_impact(fp_df, stop_losses)` → dict keyed by stop level
+    - Per level: triggered_count, triggered_pct, exit_loss_pct, uncaught_max_loss_pct, uncaught_count
+    - Default levels: -5, -10, -15, -20, -25%
+  - `plot_ascii(fp_df, bins=10)` → str — ASCII █░ histogram of min_loss_120m distribution
+- [x] Add `analyze-errors` CLI command to `src/ml/cli.py`
+  - `--trades` (required) — path to backtest trades CSV
+  - `--output` (optional) — path to save JSON risk report
+  - Prints: histogram, risk report, stop-loss trigger table, recommendations
+- [x] Unit tests: 35 tests (TestLoadFalsePositives ×7, TestGenerateRiskReport ×11,
+  TestStopLossImpact ×8, TestPlotAscii ×8)
+- [x] Real results (xgboost_v2, threshold=0.67, 25 FPs, test split):
+  - Median drawdown: -23.8% | P90: -15.8% | Worst: -69.1%
+  - 0% of FPs stayed above entry price — all fell below entry
+  - 80% of FPs lost >20%; 16% lost 15–20%; 4% lost 10–15%
+  - Stop at -10% would catch 100% of FPs; -20% catches 80%; -25% catches 44%
+  - Conservative stop recommendation: -20.0% | Moderate: -15.8%
+- [x] Full test suite: 1161 passing + 7 skipped
+- Added `calculate_expected_value(precision, avg_win_pct, avg_loss_pct, stop_loss_pct)` → dict
+  - EV per trade = precision × avg_win + (1-precision) × avg_loss
+  - Returns: win_rate, loss_rate, avg_win_pct, avg_loss_pct, expected_value_pct,
+    profitable (bool), breakeven_win_rate
+  - `analyze-errors` CLI now prints EV section using conservative stop and signal precision
+  - 10 new tests for calculate_expected_value (TestCalculateExpectedValue)
+- [x] Full test suite: 1171 passing + 7 skipped
+
 ## Future
 - [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
 - [ ] VIX data integration (upgrade massive.com plan)
@@ -496,4 +557,4 @@
 - [ ] MLflow integration
 
 ---
-**Total tests: 939 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-20**
+**Total tests: 1171 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-20**

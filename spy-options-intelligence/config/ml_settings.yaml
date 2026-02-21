@@ -99,6 +99,23 @@ ml_training:
     # Where CSV importance reports are written
     output_dir: "data/reports/feature_importance"
 
+  # --- Evaluation & threshold optimisation ---
+  evaluation:
+    # Primary focus metric for signal filtering
+    primary_metric: "precision"
+
+    # Minimum precision required for a threshold to be considered valid
+    min_precision_required: 0.90
+
+    # Default prediction threshold used when no --threshold flag is supplied.
+    # Set to 0.50 for balanced precision/recall; increase for high-precision trading.
+    prediction_threshold: 0.50
+
+  # --- Speed requirement ---
+  performance:
+    # Hard real-time requirement: p99 prediction latency must be below this value
+    max_prediction_latency_ms: 100
+
   # --- Backtesting ---
   backtest:
     # Where trades CSV and JSON metrics reports are written

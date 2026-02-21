@@ -23,13 +23,14 @@ class ConfigLoader:
     Load and merge YAML configuration files with environment variable substitution.
 
     Merge order: settings.yaml (base) <- sources.yaml <- sinks.yaml <- retry_policy.yaml
+                 <- any additional *.yaml files found in config_dir (alphabetical order)
     Environment variables referenced as ${VAR} in YAML are resolved from os.environ.
     """
 
     # Regex to match ${VAR_NAME} patterns
     _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
-    # YAML files to load in merge order
+    # Required YAML files loaded first in this exact order (base → override)
     _YAML_FILES = ["settings.yaml", "sources.yaml", "sinks.yaml", "retry_policy.yaml"]
 
     # Keys that must be present and non-empty after loading
@@ -71,11 +72,20 @@ class ConfigLoader:
         if self.env_file.exists():
             load_dotenv(self.env_file, override=True)
 
-        # Parse and merge YAML files in order
+        # Parse and merge required YAML files in defined order
         merged: dict = {}
         for filename in self._YAML_FILES:
             filepath = self.config_dir / filename
             data = self._load_yaml(filepath)
+            merged = self._deep_merge(merged, data)
+
+        # Auto-discover and merge any additional *.yaml files (e.g. ml_settings.yaml)
+        _base_set = set(self._YAML_FILES)
+        extra_files = sorted(
+            f.name for f in self.config_dir.glob("*.yaml") if f.name not in _base_set
+        )
+        for filename in extra_files:
+            data = self._load_yaml(self.config_dir / filename)
             merged = self._deep_merge(merged, data)
 
         # Substitute ${VAR} references

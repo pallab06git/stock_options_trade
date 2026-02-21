@@ -626,6 +626,7 @@ class MLFeatureEngineer:
 
         Also stores:
           - max_gain_120m   : maximum % gain achievable in the forward window
+          - min_loss_120m   : minimum % change (worst drawdown) in the forward window
           - time_to_max_min : minutes from T to the bar with the highest gain
 
         Uses numpy binary search (searchsorted) for O(n log n) performance.
@@ -635,7 +636,7 @@ class MLFeatureEngineer:
                 sorted ascending by timestamp.
 
         Returns:
-            df with target, max_gain_120m, time_to_max_min columns added.
+            df with target, max_gain_120m, min_loss_120m, time_to_max_min columns added.
         """
         df = df.copy()
         timestamps = df["timestamp"].values
@@ -644,6 +645,7 @@ class MLFeatureEngineer:
 
         targets = np.zeros(len(df), dtype=np.int8)
         max_gains = np.full(len(df), np.nan)
+        min_losses = np.full(len(df), np.nan)
         times_to_max = np.full(len(df), np.nan)
 
         for i in range(len(df)):
@@ -674,11 +676,15 @@ class MLFeatureEngineer:
             max_gains[i] = max_gain
             times_to_max[i] = (future_ts[best_idx] - entry_ts) / 60_000.0
 
+            # Worst drawdown in the forward window (for risk / stop-loss analysis)
+            min_losses[i] = float(np.nanmin(gains))
+
             if max_gain >= self.target_threshold_pct:
                 targets[i] = 1
 
         df["target"] = targets
         df["max_gain_120m"] = max_gains
+        df["min_loss_120m"] = min_losses
         df["time_to_max_min"] = times_to_max
 
         return df

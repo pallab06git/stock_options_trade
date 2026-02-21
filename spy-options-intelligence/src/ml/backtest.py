@@ -87,6 +87,7 @@ _TRADE_META_COLS: List[str] = [
     "ticker",
     "timestamp",
     "max_gain_120m",
+    "min_loss_120m",
     "time_to_max_min",
 ]
 
@@ -208,6 +209,7 @@ class ModelBacktester:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         output_dir: Optional[str | Path] = None,
+        threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Load artifact + features, backtest on test split, save reports.
 
@@ -217,6 +219,8 @@ class ModelBacktester:
             start_date:   Earliest date to include (optional).
             end_date:     Latest date to include (optional).
             output_dir:   Override the configured output directory.
+            threshold:    Override the model artifact's prediction threshold
+                          (0.0–1.0).  ``None`` uses the artifact value.
 
         Returns:
             Dict with keys:
@@ -238,7 +242,8 @@ class ModelBacktester:
         artifact = joblib.load(model_path)
         model: xgb.XGBClassifier = artifact["model"]
         feature_cols: List[str] = artifact["feature_cols"]
-        threshold: float = float(artifact.get("threshold", 0.5))
+        # Use caller-supplied threshold; fall back to artifact value
+        threshold = float(threshold) if threshold is not None else float(artifact.get("threshold", 0.5))
         model_version: str = model_path.stem  # e.g. "xgboost_v1"
 
         # ── Load features ─────────────────────────────────────────────
@@ -256,8 +261,8 @@ class ModelBacktester:
 
         logger.info(
             f"ModelBacktester: {len(df)} total rows | "
-            f"{len(test_df)} test rows | "
-            f"threshold={threshold:.2f}"
+            f"{len(test_df)} test rows | threshold={threshold:.2f}"
+            + (" (CLI override)" if threshold != float(artifact.get("threshold", 0.5)) else "")
         )
 
         # ── Backtest ──────────────────────────────────────────────────
