@@ -17,3 +17,12 @@ retry:
     jitter: true
     rate_limit_wait_seconds: 12  # 5 req/min = 12s between requests
     retry_on_status_codes: [500, 502, 503, 504, 429]
+
+  massive:
+    max_attempts: 7
+    initial_wait_seconds: 15.0  # 60s / 4 safe calls = 15s minimum between retries
+    max_wait_seconds: 120.0
+    exponential_base: 2
+    jitter: true
+    rate_limit_wait_seconds: 15  # enforced proactively in MassiveOptionsDownloader
+    retry_on_status_codes: [500, 502, 503, 504, 429]

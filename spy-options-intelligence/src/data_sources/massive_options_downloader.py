@@ -41,6 +41,8 @@ API key resolution (sources.yaml / env vars)
 from __future__ import annotations
 
 import os
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -62,6 +64,40 @@ except ImportError:
     _MASSIVE_AVAILABLE = False
 
 
+def _extract_status_code(exc: Exception) -> int:
+    """Extract HTTP status code from Massive/requests exceptions.
+
+    Tries multiple attribute locations used by different HTTP client libraries,
+    then falls back to string matching for '429' / 'rate limit' in the message.
+    Returns 0 if no status code can be found.
+    """
+    # Direct attribute (some clients attach status_code or status)
+    for attr in ("status_code", "status"):
+        code = getattr(exc, attr, None)
+        if isinstance(code, int) and code > 0:
+            return code
+
+    # requests.HTTPError stores the response object
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        code = getattr(resp, "status_code", 0)
+        if isinstance(code, int) and code > 0:
+            return code
+
+    # Last resort: string matching
+    msg = str(exc).lower()
+    if "429" in msg or "rate limit" in msg or "too many requests" in msg:
+        return 429
+    if "500" in msg:
+        return 500
+    if "502" in msg:
+        return 502
+    if "503" in msg:
+        return 503
+
+    return 0
+
+
 class MassiveOptionsDownloader:
     """Parallel options minute-bar downloader backed by massive.RESTClient.
 
@@ -72,6 +108,16 @@ class MassiveOptionsDownloader:
       - Calling list_aggs() for each contract (in parallel)
       - Persisting the results as date-partitioned Parquet files
 
+    Rate limiting
+    -------------
+    Massive free tier allows 5 API calls/minute.  A class-level lock and
+    timestamp enforce a minimum 15-second gap between consecutive API calls
+    (giving a safe 4 calls/minute ceiling).  This is proactive throttling —
+    the gap is enforced BEFORE each call so 429s are avoided rather than
+    recovered from.  The ``massive`` retry profile in retry_policy.yaml
+    provides a 7-attempt exponential backoff as a safety net for any 429s
+    that slip through (e.g. burst from another process using the same key).
+
     Args:
         config:   Full merged config dict.
         api_key:  Massive.com API key.
@@ -80,6 +126,12 @@ class MassiveOptionsDownloader:
     Raises:
         ImportError: If the ``massive`` package is not installed.
     """
+
+    # Class-level rate limiter — shared across all instances and threads.
+    # Enforces a minimum gap between consecutive Massive API calls.
+    _rate_lock: threading.Lock = threading.Lock()
+    _last_api_call: float = 0.0          # monotonic timestamp of last call
+    _MIN_CALL_INTERVAL: float = 15.0     # seconds (60s / 4 safe calls/min)
 
     def __init__(
         self,
@@ -101,7 +153,9 @@ class MassiveOptionsDownloader:
 
         opts_cfg = config.get("pipeline_v2", {}).get("massive_options", {})
         self._limit       = opts_cfg.get("limit_per_request", 500)
-        self._max_workers = opts_cfg.get("max_workers", 4)
+        # Default max_workers=1: with a 15s/call rate limit, parallelism only
+        # causes burst 429s.  Set >1 only if you have a higher-tier plan.
+        self._max_workers = opts_cfg.get("max_workers", 1)
 
         parquet_cfg = config.get("sinks", {}).get("parquet", {})
         self.base_path   = Path(parquet_cfg.get("base_path", "data/raw"))
@@ -356,10 +410,26 @@ class MassiveOptionsDownloader:
         )
         return len(bars)
 
+    def _throttle(self) -> None:
+        """Enforce the minimum inter-call interval before each Massive API call.
+
+        Acquires the class-level lock, sleeps if the last call was too recent,
+        then records the current timestamp.  This runs BEFORE the API call so
+        429s are avoided proactively rather than recovered from after the fact.
+        """
+        with self.__class__._rate_lock:
+            elapsed = time.monotonic() - self.__class__._last_api_call
+            if elapsed < self.__class__._MIN_CALL_INTERVAL:
+                wait = self.__class__._MIN_CALL_INTERVAL - elapsed
+                logger.debug(f"Rate throttle: sleeping {wait:.1f}s before Massive call")
+                time.sleep(wait)
+            self.__class__._last_api_call = time.monotonic()
+
     def _fetch_bars(self, ticker: str, date: str) -> List[Dict[str, Any]]:
         """Call massive list_aggs() for one ticker on one date.
 
-        Wraps the call in the project retry handler for 5xx / 429 errors.
+        Proactively throttles to stay under the 5 calls/min free-tier limit,
+        then wraps the call in the project retry handler for 5xx / 429 errors.
 
         Args:
             ticker: Options ticker (e.g. "O:SPY250304C00601000").
@@ -368,8 +438,9 @@ class MassiveOptionsDownloader:
         Returns:
             List of bar dicts. Empty if the contract has no data.
         """
-        @with_retry(source="polygon", config=self.config)
+        @with_retry(source="massive", config=self.config)
         def _call():
+            self._throttle()
             try:
                 bars = []
                 for agg in self._client.list_aggs(
@@ -396,15 +467,15 @@ class MassiveOptionsDownloader:
                     })
                 return bars
             except Exception as exc:
-                code = getattr(exc, "status_code", getattr(exc, "status", 0))
-                if isinstance(code, int) and code > 0:
+                code = _extract_status_code(exc)
+                if code > 0:
                     raise RetryableError(str(exc), status_code=code) from exc
                 raise
 
         try:
             return _call()
         except Exception as exc:
-            logger.debug(f"_fetch_bars({ticker}, {date}): {exc}")
+            logger.warning(f"_fetch_bars({ticker}, {date}) failed after retries: {exc}")
             return []
 
     def _date_range(self, start_date: str, end_date: str) -> List[str]:
