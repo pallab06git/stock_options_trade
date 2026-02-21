@@ -718,3 +718,269 @@ def analyze_errors(trades_path, output):
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# threshold-analysis
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("threshold-analysis")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--model-path",
+    required=True,
+    help="Path to the .pkl model artifact (e.g. models/xgboost_v2.pkl).",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Earliest feature date (YYYY-MM-DD).  No lower bound if omitted.",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Latest feature date (YYYY-MM-DD).  No upper bound if omitted.",
+)
+@click.option(
+    "--min-threshold",
+    default=0.70,
+    type=float,
+    show_default=True,
+    help="Lowest threshold to evaluate.",
+)
+@click.option(
+    "--max-threshold",
+    default=0.95,
+    type=float,
+    show_default=True,
+    help="Highest threshold to evaluate.",
+)
+@click.option(
+    "--step",
+    default=0.01,
+    type=float,
+    show_default=True,
+    help="Step size between thresholds.",
+)
+@click.option(
+    "--output",
+    default=None,
+    help="Output directory for CSV/JSON reports.  "
+    "Defaults to data/reports/threshold_analysis.",
+)
+def threshold_analysis(
+    config_dir,
+    model_path,
+    start_date,
+    end_date,
+    min_threshold,
+    max_threshold,
+    step,
+    output,
+):
+    """Comprehensive threshold sensitivity analysis with monthly breakdown.
+
+    Sweeps probability thresholds across the full feature dataset and reports
+    signal counts, precision, recall, TP profit / FP loss / FN missed-gain
+    distributions, and expected value — broken down by full-year aggregate,
+    calendar month, and trading day.
+
+    NOTE: Analysis spans the entire date range including training data.
+    Precision on training dates will be optimistic.  Use 'ml backtest
+    --threshold X' for unbiased held-out test-set evaluation.
+    """
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+
+        import joblib
+        import numpy as _np
+
+        from src.ml.threshold_analyzer import ThresholdAnalyzer
+
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        features_dir = config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output) if output else _Path("data/reports/threshold_analysis")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build threshold list (round to 2dp to avoid floating-point drift)
+        thresholds = [
+            round(t, 2)
+            for t in _np.arange(min_threshold, max_threshold + step * 0.5, step)
+        ]
+
+        # Load artifact
+        artifact = joblib.load(model_path)
+
+        click.echo(f"\n--- Threshold Sensitivity Analysis ---")
+        click.echo(f"Model:          {model_path}")
+        click.echo(f"Features dir:   {features_dir}")
+        click.echo(f"Date range:     {start_date or 'all'} → {end_date or 'all'}")
+        click.echo(
+            f"Thresholds:     {thresholds[0]:.2f} – {thresholds[-1]:.2f} "
+            f"(step {step:.2f}, n={len(thresholds)})"
+        )
+        click.echo(
+            "NOTE: includes training data — use 'ml backtest' for test-only metrics\n"
+        )
+
+        analyzer = ThresholdAnalyzer()
+        results = analyzer.analyze_full_year(
+            artifact=artifact,
+            features_dir=features_dir,
+            thresholds=thresholds,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        aggregate_df = results["aggregate"]
+        monthly_df = results["monthly"]
+        daily_df = results["daily"]
+
+        click.echo(
+            f"Loaded:  {results['total_samples']:,} rows | "
+            f"{results['n_dates']} dates | {results['n_months']} months"
+        )
+        click.echo(
+            f"Range:   {results['date_range'][0]}  →  {results['date_range'][1]}\n"
+        )
+
+        # ── Save CSVs ─────────────────────────────────────────────────
+        aggregate_df.to_csv(out_dir / "aggregate_analysis.csv", index=False)
+        monthly_df.to_csv(out_dir / "monthly_breakdown.csv", index=False)
+        daily_df.to_csv(out_dir / "daily_breakdown.csv", index=False)
+
+        # ── Monthly summary pivot ─────────────────────────────────────
+        monthly_summary = analyzer.generate_monthly_summary(monthly_df)
+        monthly_summary.to_csv(out_dir / "monthly_summary.csv", index=False)
+
+        # ── ASCII bar chart ───────────────────────────────────────────
+        chart_str = analyzer.plot_monthly_signals(monthly_summary)
+        (out_dir / "monthly_signals_chart.txt").write_text(chart_str)
+        click.echo(chart_str)
+
+        # ── Aggregate comparison at key thresholds ────────────────────
+        key_ts = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+        key_mask = aggregate_df["threshold"].round(2).isin(key_ts)
+        comparison = aggregate_df[key_mask].copy()
+        display_cols = [
+            c
+            for c in [
+                "threshold",
+                "total_signals",
+                "signal_rate",
+                "precision",
+                "recall",
+                "tp_profit_pct_avg",
+                "tp_profit_pct_median",
+                "fp_loss_pct_avg",
+                "fp_loss_pct_median",
+                "fn_missed_pct_avg",
+                "fn_missed_pct_median",
+                "expected_value_pct",
+            ]
+            if c in comparison.columns
+        ]
+        click.echo("\n--- Aggregate: Key Thresholds ---")
+        with _np.printoptions(precision=3):
+            import pandas as _pd
+
+            with _pd.option_context("display.float_format", "{:.3f}".format):
+                click.echo(comparison[display_cols].to_string(index=False))
+
+        comparison.to_csv(out_dir / "aggregate_key_thresholds.csv", index=False)
+
+        # ── Monthly summary table ─────────────────────────────────────
+        click.echo("\n--- Monthly Summary (signals | precision | EV) ---")
+        click.echo(monthly_summary.to_string(index=False))
+
+        # ── Optimal threshold search ──────────────────────────────────
+        click.echo("\n--- Optimal Threshold Recommendations ---")
+
+        # min_signals: require at least n_dates / 10 total signals across full dataset
+        min_sig_ev = max(10, results["n_dates"] // 10)
+        min_sig_safe = max(5, results["n_dates"] // 20)
+
+        opt_ev = analyzer.find_optimal_threshold(
+            aggregate_df,
+            optimization_metric="expected_value_pct",
+            min_precision=0.90,
+            min_signals=min_sig_ev,
+        )
+        if opt_ev["status"] == "SUCCESS":
+            m = opt_ev["metrics"]
+            nd = results["n_dates"]
+            click.echo(
+                f"\n1. Max expected value (precision >= 90%):\n"
+                f"   Threshold:      {opt_ev['optimal_threshold']:.2f}\n"
+                f"   Precision:      {m['precision']:.1%}\n"
+                f"   Recall:         {m['recall']:.1%}\n"
+                f"   Signals total:  {m['total_signals']}\n"
+                f"   Signals/day:    {m['total_signals'] / nd:.1f}\n"
+                f"   EV/trade:       {m['expected_value_pct']:+.2f}%\n"
+                f"   TP avg profit:  {m.get('tp_profit_pct_avg') or 'n/a'}%\n"
+                f"   FP avg loss:    {m.get('fp_loss_pct_avg') or 'n/a'}%\n"
+                f"   FN avg missed:  {m.get('fn_missed_pct_avg') or 'n/a'}%"
+            )
+        else:
+            click.echo(f"\n1. {opt_ev['message']}")
+
+        opt_safe = analyzer.find_optimal_threshold(
+            aggregate_df,
+            optimization_metric="precision",
+            min_precision=0.93,
+            min_signals=min_sig_safe,
+        )
+        if opt_safe["status"] == "SUCCESS":
+            m2 = opt_safe["metrics"]
+            click.echo(
+                f"\n2. Max precision (>= 93%):\n"
+                f"   Threshold:      {opt_safe['optimal_threshold']:.2f}\n"
+                f"   Precision:      {m2['precision']:.1%}\n"
+                f"   Signals/day:    {m2['total_signals'] / results['n_dates']:.1f}\n"
+                f"   EV/trade:       {m2['expected_value_pct']:+.2f}%"
+            )
+        else:
+            click.echo(f"\n2. {opt_safe['message']}")
+
+        # ── Save recommendations ──────────────────────────────────────
+        recommendations = {
+            "max_expected_value": opt_ev,
+            "max_precision": opt_safe,
+            "metadata": {
+                "model_path": str(model_path),
+                "date_range": list(results["date_range"]),
+                "total_samples": results["total_samples"],
+                "n_dates": results["n_dates"],
+                "n_months": results["n_months"],
+                "thresholds_swept": thresholds,
+            },
+        }
+        with open(out_dir / "recommendations.json", "w") as fh:
+            _json.dump(recommendations, fh, indent=2, default=str)
+
+        click.echo(f"\nReports saved to: {out_dir}/")
+        click.echo(
+            f"  aggregate_analysis.csv    ({len(aggregate_df)} rows)\n"
+            f"  monthly_breakdown.csv     ({len(monthly_df)} rows)\n"
+            f"  daily_breakdown.csv       ({len(daily_df)} rows)\n"
+            f"  monthly_summary.csv\n"
+            f"  monthly_signals_chart.txt\n"
+            f"  aggregate_key_thresholds.csv\n"
+            f"  recommendations.json"
+        )
+
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)

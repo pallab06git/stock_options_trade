@@ -549,6 +549,46 @@
   - 10 new tests for calculate_expected_value (TestCalculateExpectedValue)
 - [x] Full test suite: 1171 passing + 7 skipped
 
+## Step 41: Threshold Sensitivity Analysis ✅
+- [x] Create `src/ml/threshold_analyzer.py` — `ThresholdAnalyzer` class
+  - `analyze_full_year(artifact, features_dir, thresholds, start_date, end_date)` → dict
+    - Loads full feature dataset with `load_features()`; runs `predict_proba` in one batch
+    - Returns: aggregate (DataFrame), monthly (DataFrame), daily (DataFrame),
+      date_range, total_samples, n_dates, n_months
+  - `_analyze_threshold_range(df, predictions, thresholds)` → DataFrame (one row per threshold)
+  - `_analyze_single_threshold(y_true, predictions, max_gains, min_losses, threshold)` → dict
+    - Counts: total_signals, TP, FP, FN, TN, signal_rate
+    - Metrics: precision, recall, f1_score
+    - TP profit stats: max/avg/median/min/std (from max_gain_120m on TP bars)
+    - FP loss stats: max/avg/median/min/std (from min_loss_120m on FP bars)
+    - FN missed stats: max/avg/median/min/std (from max_gain_120m on FN bars)
+    - Expected value = precision × avg_tp_gain + (1−precision) × avg_fp_loss
+    - NaN-safe: drops NaN end-of-day bars via pd.Series.dropna()
+  - `generate_monthly_summary(monthly_df, key_thresholds)` → DataFrame
+    - Pivots monthly_df to: month × (signals_{pct}, precision_{pct}, ev_{pct})
+  - `plot_monthly_signals(monthly_summary, key_thresholds)` → str (ASCII bar chart)
+  - `find_optimal_threshold(results_df, optimization_metric, min_precision, min_signals)` → dict
+    - Returns SUCCESS + optimal_threshold + metrics, or NO_VALID_THRESHOLD + message
+- [x] Add `threshold-analysis` CLI command to `src/ml/cli.py`
+  - `--model-path` (required), `--start-date`, `--end-date`
+  - `--min-threshold` (0.70), `--max-threshold` (0.95), `--step` (0.01)
+  - `--output` (default: data/reports/threshold_analysis)
+  - Saves 7 files: aggregate_analysis.csv, monthly_breakdown.csv, daily_breakdown.csv,
+    monthly_summary.csv, monthly_signals_chart.txt, aggregate_key_thresholds.csv, recommendations.json
+  - Prints: ASCII bar chart, key-threshold table, monthly summary, 2 optimal recommendations
+- [x] Unit tests: 38 tests (TestAnalyzeSingleThreshold ×11, TestAnalyzeThresholdRange ×6,
+  TestGenerateMonthlySummary ×7, TestPlotMonthlySignals ×6, TestFindOptimalThreshold ×8)
+- [x] Full test suite: 1209 passing + 7 skipped
+- [x] Real results (xgboost_v2, full year 2025-03-03 → 2026-02-19):
+  - 172,068 rows | 231 dates | 12 months
+  - At threshold=0.70: 5,004 signals | 94.5% precision | TP avg profit=90.2%
+  - At threshold=0.75: 1,359 signals | 93.6% precision | TP avg profit=107.1%
+  - At threshold=0.85: 37 signals | 94.6% precision | 0 FPs | EV=+101%
+  - At threshold=0.90+: 0 signals (model doesn't output probabilities that high)
+  - December 2025 (test period): precision drops to 58%/31%/16% at 0.70/0.75/0.80
+    → confirms held-out test performance is more modest than training period
+  - Key insight: use 'ml backtest --threshold' for real held-out evaluation
+
 ## Future
 - [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
 - [ ] VIX data integration (upgrade massive.com plan)
@@ -557,4 +597,4 @@
 - [ ] MLflow integration
 
 ---
-**Total tests: 1171 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-20**
+**Total tests: 1209 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-20**
