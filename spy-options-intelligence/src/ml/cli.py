@@ -7137,3 +7137,165 @@ def walk_forward_validation(
         click.echo(f"Error: {exc}", err=True)
         click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
+
+
+# ── build-signal-dashboard ────────────────────────────────────────────────────
+@ml_cli.command("build-signal-dashboard")
+@click.option(
+    "--lgbm-model",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to LightGBM artifact (.pkl) from final-optimization.",
+)
+@click.option(
+    "--rf-model",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to RandomForest artifact (.pkl) from final-optimization.",
+)
+@click.option(
+    "--features-dir",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing *_features.csv files.",
+)
+@click.option("--config-dir", default="config", show_default=True)
+@click.option(
+    "--threshold",
+    default=0.97,
+    type=float,
+    show_default=True,
+    help="AVG-probability threshold for declaring a signal.",
+)
+@click.option(
+    "--min-magnitude",
+    default=20.0,
+    type=float,
+    show_default=True,
+    help="Minimum abs move (%) used to define target_magnitude=1.",
+)
+@click.option(
+    "--output",
+    default="reports/signal_dashboard.html",
+    show_default=True,
+    help="Output path for the standalone HTML dashboard.",
+)
+def build_signal_dashboard(
+    lgbm_model,
+    rf_model,
+    features_dir,
+    config_dir,
+    threshold,
+    min_magnitude,
+    output,
+):
+    """Extract all historical signals and build an interactive HTML dashboard.
+
+    \b
+    Example:
+        python -m src.cli ml build-signal-dashboard \\
+            --lgbm-model reports/final_optimization/lgbm_deep_opt.pkl \\
+            --rf-model   reports/final_optimization/rf_deep_opt.pkl \\
+            --features-dir data/processed/features/ \\
+            --threshold 0.97 \\
+            --output reports/signal_dashboard.html
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import joblib as _joblib
+
+    from src.ml.train_xgboost import load_features
+    from src.processing.magnitude_labeler import MagnitudeLabeler
+    from src.analysis.signal_extractor import SignalExtractor
+    from src.visualization.signal_dashboard import SignalDashboard
+    from src.utils.config_loader import ConfigLoader
+    from src.utils.logger import setup_logger
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        out_path = _Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # ── [1/5] Load model artifacts ────────────────────────────────────────
+        click.echo("\n[1/5] Loading model artifacts…")
+        lgbm_artifact = _joblib.load(lgbm_model)
+        rf_artifact   = _joblib.load(rf_model)
+        lgbm_obj      = lgbm_artifact["model"]
+        rf_obj        = rf_artifact["model"]
+        feature_cols  = lgbm_artifact.get("feature_cols", rf_artifact.get("feature_cols", []))
+
+        lgbm_name = _Path(lgbm_model).stem
+        rf_name   = _Path(rf_model).stem
+        click.echo(f"  LightGBM : {lgbm_name}  ({len(feature_cols)} features)")
+        click.echo(f"  RF       : {rf_name}")
+
+        if not feature_cols:
+            click.echo(
+                "Error: feature_cols not found in artifact — "
+                "run final-optimization first.",
+                err=True,
+            )
+            sys.exit(1)
+
+        # ── [2/5] Load + label features ───────────────────────────────────────
+        click.echo("\n[2/5] Loading and labelling feature CSVs…")
+        df = load_features(features_dir, None, None)
+        if df.empty:
+            click.echo(f"Error: no data in {features_dir}", err=True)
+            sys.exit(1)
+        n_dates = df["date"].nunique() if "date" in df.columns else "?"
+        click.echo(f"  Loaded {len(df):,} rows across {n_dates} dates")
+
+        labeler  = MagnitudeLabeler(min_magnitude_pct=min_magnitude)
+        df       = labeler.label(df)
+        stats    = labeler.validate(df)
+        click.echo(
+            f"  Positive rate: {stats['positive_rate']:.2%}"
+            f"  ({stats['n_positive']:,} positives  |  min_magnitude={min_magnitude}%)"
+        )
+
+        # Backfill missing feature columns with 0
+        missing_cols = [c for c in feature_cols if c not in df.columns]
+        if missing_cols:
+            click.echo(
+                f"  WARNING: {len(missing_cols)} feature col(s) missing (will fill 0): "
+                f"{missing_cols[:5]}{'...' if len(missing_cols) > 5 else ''}",
+                err=True,
+            )
+            for c in missing_cols:
+                df[c] = 0.0
+
+        # ── [3/5] Extract signals ─────────────────────────────────────────────
+        click.echo(f"\n[3/5] Extracting signals (threshold={threshold})…")
+        extractor   = SignalExtractor(feature_cols=feature_cols)
+        signals_df  = extractor.extract_all_signals(
+            lgbm_model=lgbm_obj,
+            rf_model=rf_obj,
+            full_df=df,
+            threshold=threshold,
+        )
+
+        # ── [4/5] Save signal CSV alongside the HTML ──────────────────────────
+        click.echo("\n[4/5] Saving signal CSV…")
+        csv_path = out_path.with_suffix(".csv")
+        signals_df.to_csv(csv_path, index=False)
+        click.echo(f"  Saved → {csv_path}")
+
+        # ── [5/5] Build dashboard ─────────────────────────────────────────────
+        click.echo("\n[5/5] Building dashboard…")
+        dashboard = SignalDashboard(
+            lgbm_model_name=lgbm_name,
+            rf_model_name=rf_name,
+            threshold=threshold,
+        )
+        dashboard.build_dashboard(signals_df=signals_df, output_path=out_path)
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
