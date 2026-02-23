@@ -6955,3 +6955,185 @@ def final_optimization(
         click.echo(f"Error: {exc}", err=True)
         click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# walk-forward-validation
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("walk-forward-validation")
+@click.option(
+    "--lgbm-model",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to LightGBM artifact .pkl (e.g. reports/final_optimization/lgbm_deep_opt.pkl).",
+)
+@click.option(
+    "--rf-model",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to RandomForest artifact .pkl (e.g. reports/final_optimization/rf_deep_opt.pkl).",
+)
+@click.option(
+    "--features-dir",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing *_features.csv files.",
+)
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--n-splits",
+    default=5,
+    type=int,
+    show_default=True,
+    help="Number of TimeSeriesSplit walk-forward folds.",
+)
+@click.option(
+    "--threshold",
+    default=0.97,
+    type=float,
+    show_default=True,
+    help="AVG-probability threshold for firing a signal.",
+)
+@click.option(
+    "--min-magnitude",
+    default=20.0,
+    type=float,
+    show_default=True,
+    help="Min absolute % move used to derive target_magnitude labels.",
+)
+@click.option(
+    "--output",
+    default="reports/walk_forward_validation",
+    show_default=True,
+    help="Output directory for JSON results.",
+)
+def walk_forward_validation(
+    lgbm_model,
+    rf_model,
+    features_dir,
+    config_dir,
+    n_splits,
+    threshold,
+    min_magnitude,
+    output,
+):
+    """Walk-forward stability test for the pre-trained magnitude ensemble.
+
+    Tests the AVG@threshold ensemble (LightGBM + RandomForest from
+    final-optimization) across n_splits time-series windows to verify
+    that the single-period precision holds across market regimes.
+
+    \b
+    No retraining occurs — the same frozen models are evaluated on each
+    chronological test window.
+
+    \b
+    Verdicts:
+        STABLE          : mean_precision >= 95% AND std < 5%
+        GOOD_BUT_VARIABLE: mean_precision >= 90%
+        UNSTABLE        : mean_precision < 90%
+
+    \b
+    Example:
+        python -m src.cli ml walk-forward-validation \\
+            --lgbm-model reports/final_optimization/lgbm_deep_opt.pkl \\
+            --rf-model   reports/final_optimization/rf_deep_opt.pkl \\
+            --features-dir data/processed/features \\
+            --n-splits 5 --threshold 0.97
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import joblib as _joblib
+
+    from src.ml.ensemble_walk_forward import EnsembleWalkForwardValidator
+    from src.ml.train_xgboost import load_features, _NON_FEATURE_COLS
+    from src.processing.magnitude_labeler import MagnitudeLabeler
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        out_dir = _Path(output)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # ── Load artifacts ────────────────────────────────────────────
+        click.echo("\n[1/4] Loading model artifacts…")
+        lgbm_artifact = _joblib.load(lgbm_model)
+        rf_artifact   = _joblib.load(rf_model)
+        lgbm_obj      = lgbm_artifact["model"]
+        rf_obj        = rf_artifact["model"]
+        feature_cols  = lgbm_artifact.get("feature_cols", rf_artifact.get("feature_cols", []))
+
+        click.echo(f"  LightGBM : {lgbm_model}  ({len(feature_cols)} features)")
+        click.echo(f"  RF       : {rf_model}")
+
+        if not feature_cols:
+            click.echo(
+                "Error: feature_cols not found in artifact — "
+                "run final-optimization first.",
+                err=True,
+            )
+            sys.exit(1)
+
+        # ── Load + label features ─────────────────────────────────────
+        click.echo("\n[2/4] Loading and labelling feature CSVs…")
+        df = load_features(features_dir, None, None)
+        if df.empty:
+            click.echo(f"Error: no data in {features_dir}", err=True)
+            sys.exit(1)
+        n_dates = df["date"].nunique() if "date" in df.columns else "?"
+        click.echo(f"  Loaded {len(df):,} rows across {n_dates} dates")
+
+        labeler = MagnitudeLabeler(min_magnitude_pct=min_magnitude)
+        df      = labeler.label(df)
+        stats   = labeler.validate(df)
+        click.echo(
+            f"  Positive rate: {stats['positive_rate']:.2%}"
+            f"  ({stats['n_positive']:,} positives  |  min_magnitude={min_magnitude}%)"
+        )
+
+        # Verify feature_cols exist in df
+        missing_cols = [c for c in feature_cols if c not in df.columns]
+        if missing_cols:
+            click.echo(
+                f"  WARNING: {len(missing_cols)} feature col(s) missing from data "
+                f"(will fill with 0): {missing_cols[:5]}{'...' if len(missing_cols) > 5 else ''}",
+                err=True,
+            )
+            for c in missing_cols:
+                df[c] = 0.0
+
+        # ── Run walk-forward validation ───────────────────────────────
+        click.echo(
+            f"\n[3/4] Running walk-forward validation "
+            f"({n_splits} folds, threshold={threshold})…"
+        )
+        validator = EnsembleWalkForwardValidator(feature_cols=feature_cols)
+        wf_result = validator.validate_ensemble_strategy(
+            lgbm_model=lgbm_obj,
+            rf_model=rf_obj,
+            full_df=df,
+            threshold=threshold,
+            n_splits=n_splits,
+        )
+
+        # ── Save results ──────────────────────────────────────────────
+        click.echo("\n[4/4] Saving results…")
+        results_path = out_dir / "walk_forward_validation_results.json"
+        results_path.write_text(_json.dumps(wf_result, indent=2))
+        click.echo(f"  Saved → {results_path}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
