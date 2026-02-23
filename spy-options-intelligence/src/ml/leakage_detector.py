@@ -59,6 +59,11 @@ _TARGET_COLS: frozenset = frozenset(
     {"target", "max_gain_120m", "min_loss_120m", "max_gain_pct", "time_to_max_min"}
 )
 
+#: Regex to flag features whose names imply end-of-day or cumulative-day quantities.
+_CUMDAY_PATTERN: re.Pattern = re.compile(
+    r"cumday|cumulative|day_total|pct_day", re.IGNORECASE
+)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -457,6 +462,217 @@ class LeakageDetector:
         return result
 
     # ------------------------------------------------------------------
+    # Test 7: 120-minute specific leakage (correlation + name patterns)
+    # ------------------------------------------------------------------
+
+    def check_120min_specific_leaks(
+        self,
+        df: pd.DataFrame,
+        feature_cols: List[str],
+        high_corr_threshold: float = 0.40,
+        mod_corr_threshold: float = 0.25,
+    ) -> Dict[str, Any]:
+        """Detect features suspicious for 120-minute forward leakage.
+
+        Two complementary checks:
+
+        1. **Name pattern** — flags features whose names imply end-of-day or
+           cumulative-day quantities (``cumday``, ``pct_day``, etc.).
+
+        2. **Pearson correlation** — flags features with |corr| above thresholds
+           against ``max_gain_120m`` (or ``target_sustained`` / ``target`` if
+           the primary outcome column is absent).
+
+        High correlation alone does not prove leakage (momentum features
+        legitimately correlate with future moves), but values ≥ 0.40 are
+        unusual enough to warrant manual review.
+
+        Args:
+            df: DataFrame containing both feature columns and outcome columns.
+            feature_cols: Feature column names to audit.
+            high_corr_threshold: |corr| ≥ this → mark as HIGH suspicion.
+            mod_corr_threshold:  |corr| ≥ this → mark as MODERATE suspicion.
+
+        Returns:
+            Dict with ``suspicious_by_name``, ``suspicious_by_correlation``,
+            ``correlation_table_top20``, ``outcome_column_used``, and
+            ``leakage_suspected`` (bool).
+        """
+        # ── Name-pattern check ─────────────────────────────────────────
+        suspicious_by_name = [
+            {
+                "feature": f,
+                "reason": "Name implies cumulative / end-of-day aggregate",
+            }
+            for f in feature_cols
+            if _CUMDAY_PATTERN.search(f)
+        ]
+
+        # ── Correlation check ──────────────────────────────────────────
+        outcome_col = None
+        for candidate in ("max_gain_120m", "target_sustained", "target"):
+            if candidate in df.columns:
+                outcome_col = candidate
+                break
+
+        corr_records: List[Dict[str, Any]] = []
+        suspicious_by_corr: List[Dict[str, Any]] = []
+
+        if outcome_col is not None:
+            outcome_series = df[outcome_col].astype(float)
+            for f in feature_cols:
+                if f not in df.columns:
+                    continue
+                try:
+                    corr_val = float(df[f].astype(float).corr(outcome_series))
+                except Exception:
+                    corr_val = float("nan")
+                abs_corr = abs(corr_val) if not np.isnan(corr_val) else 0.0
+                entry: Dict[str, Any] = {
+                    "feature": f,
+                    "correlation": round(corr_val, 4),
+                    "abs_corr": round(abs_corr, 4),
+                }
+                corr_records.append(entry)
+
+                if abs_corr >= high_corr_threshold:
+                    suspicious_by_corr.append({**entry, "severity": "HIGH"})
+                elif abs_corr >= mod_corr_threshold:
+                    suspicious_by_corr.append({**entry, "severity": "MODERATE"})
+
+            corr_records.sort(key=lambda x: x["abs_corr"], reverse=True)
+
+        leakage_suspected = len(suspicious_by_name) > 0 or any(
+            r.get("severity") == "HIGH" for r in suspicious_by_corr
+        )
+
+        result: Dict[str, Any] = {
+            "leakage_suspected": leakage_suspected,
+            "outcome_column_used": outcome_col,
+            "suspicious_by_name": suspicious_by_name,
+            "suspicious_by_correlation": suspicious_by_corr,
+            "correlation_table_top20": corr_records[:20],
+            "high_corr_threshold": high_corr_threshold,
+            "mod_corr_threshold": mod_corr_threshold,
+        }
+        self.results["correlation_leakage_check"] = result
+        return result
+
+    # ------------------------------------------------------------------
+    # Test 8: Feature importance analysis with red-flag detection
+    # ------------------------------------------------------------------
+
+    def analyze_feature_importance(
+        self,
+        model,
+        feature_cols: List[str],
+        top_n: int = 20,
+        dominance_threshold: float = 0.15,
+    ) -> Dict[str, Any]:
+        """Rank features by model importance and flag suspicious ones.
+
+        Red flags:
+
+        * A known lookahead feature appears in the ranked importances.
+        * A feature with a cumulative-day name pattern appears in the top 10.
+        * A single feature claims ≥ ``dominance_threshold`` of total importance
+          (suggests the model over-relies on one signal — possible leakage).
+
+        Args:
+            model: Trained sklearn-compatible tree model (must expose
+                   ``feature_importances_``).
+            feature_cols: Feature names in the exact order used during training.
+            top_n: How many top features to include in the ranked list.
+            dominance_threshold: Importance share ≥ this triggers a WARNING.
+
+        Returns:
+            Dict with ``ranked_features`` (list), ``red_flags`` (list),
+            ``leakage_suspected`` (bool), ``top_feature``, ``total_features``.
+        """
+        if not hasattr(model, "feature_importances_"):
+            result: Dict[str, Any] = {
+                "leakage_suspected": False,
+                "error": "Model does not expose feature_importances_",
+                "red_flags": [],
+                "ranked_features": [],
+                "top_feature": None,
+                "total_features": len(feature_cols),
+            }
+            self.results["feature_importance_analysis"] = result
+            return result
+
+        importances = np.array(model.feature_importances_, dtype=float)
+        total = importances.sum()
+        if total > 0:
+            importances = importances / total
+
+        indexed = sorted(
+            enumerate(importances), key=lambda x: x[1], reverse=True
+        )
+
+        ranked: List[Dict[str, Any]] = []
+        for rank, (idx, imp) in enumerate(indexed[:top_n], start=1):
+            fname = (
+                feature_cols[idx] if idx < len(feature_cols) else f"feature_{idx}"
+            )
+            is_known_leak = fname in _KNOWN_LOOKAHEAD_FEATURES
+            is_cumday = bool(_CUMDAY_PATTERN.search(fname))
+            is_dominant = imp >= dominance_threshold
+
+            if is_known_leak:
+                flag = "CRITICAL - known lookahead"
+            elif is_cumday and rank <= 10:
+                flag = "WARNING - cumday pattern"
+            elif is_dominant:
+                flag = "WARNING - dominant feature"
+            else:
+                flag = "OK"
+
+            ranked.append(
+                {
+                    "rank": rank,
+                    "feature": fname,
+                    "importance": round(float(imp), 5),
+                    "importance_pct": f"{imp * 100:.2f}%",
+                    "is_known_leak": is_known_leak,
+                    "is_cumday": is_cumday,
+                    "flag": flag,
+                }
+            )
+
+        red_flags: List[str] = []
+        for entry in ranked:
+            if entry["is_known_leak"]:
+                red_flags.append(
+                    f"CRITICAL: '{entry['feature']}' is a known lookahead feature "
+                    f"(rank #{entry['rank']}, {entry['importance_pct']} importance)"
+                )
+            elif "WARNING - cumday" in entry["flag"]:
+                red_flags.append(
+                    f"WARNING: '{entry['feature']}' has end-of-day name pattern "
+                    f"in top 10 (rank #{entry['rank']}, {entry['importance_pct']})"
+                )
+            elif "WARNING - dominant" in entry["flag"]:
+                red_flags.append(
+                    f"WARNING: '{entry['feature']}' dominates with "
+                    f"{entry['importance_pct']} of total importance "
+                    f"(rank #{entry['rank']})"
+                )
+
+        leakage_suspected = any("CRITICAL" in f for f in red_flags)
+
+        result = {
+            "leakage_suspected": leakage_suspected,
+            "red_flags": red_flags,
+            "ranked_features": ranked,
+            "top_feature": ranked[0]["feature"] if ranked else None,
+            "total_features": len(feature_cols),
+            "dominance_threshold": dominance_threshold,
+        }
+        self.results["feature_importance_analysis"] = result
+        return result
+
+    # ------------------------------------------------------------------
     # Report
     # ------------------------------------------------------------------
 
@@ -514,6 +730,27 @@ class LeakageDetector:
                 f"Train/test contamination: {cc.get('overlap_count', 0)} overlapping dates, "
                 f"gap={cc.get('gap_days', '?')} days"
             )
+
+        # Correlation leakage check (test 7)
+        cl = self.results.get("correlation_leakage_check", {})
+        if cl.get("leakage_suspected"):
+            for item in cl.get("suspicious_by_name", []):
+                critical_issues.append(
+                    f"Cumday name pattern in features: '{item['feature']}'"
+                )
+            for item in cl.get("suspicious_by_correlation", []):
+                if item.get("severity") == "HIGH":
+                    critical_issues.append(
+                        f"High correlation [{item.get('abs_corr', '?'):.3f}] "
+                        f"with outcome: '{item['feature']}'"
+                    )
+
+        # Feature importance analysis (test 8)
+        fi = self.results.get("feature_importance_analysis", {})
+        if fi.get("leakage_suspected"):
+            for flag in fi.get("red_flags", []):
+                if "CRITICAL" in flag:
+                    critical_issues.append(flag)
 
         overall_leakage = len(critical_issues) > 0
 

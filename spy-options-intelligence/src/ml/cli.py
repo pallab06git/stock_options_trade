@@ -2466,3 +2466,2887 @@ def sustained_movement_experiment(
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+
+
+@ml_cli.command("analyze-direction-split")
+@click.option(
+    "--model",
+    "model_path",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to a .pkl model artifact (e.g. reports/sustained_with_directional/models/xgboost_sustained.pkl).",
+)
+@click.option(
+    "--test-data",
+    "features_dir",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to features directory or a single features CSV.",
+)
+@click.option(
+    "--test-start-date",
+    default=None,
+    help="Start date for test window (YYYY-MM-DD). Defaults to last 30% of data.",
+)
+@click.option(
+    "--test-end-date",
+    default=None,
+    help="End date for test window (YYYY-MM-DD). Defaults to last 30% of data.",
+)
+@click.option(
+    "--threshold",
+    default=0.70,
+    type=float,
+    show_default=True,
+    help="Probability threshold for firing a signal.",
+)
+def analyze_direction_split(model_path, features_dir, test_start_date, test_end_date, threshold):
+    """Analyze precision when price is currently rising vs falling.
+
+    Loads a trained model artifact and a features directory, then splits
+    all signals at the given threshold into two groups:
+
+    \b
+      RISING  — opt_return_1m > 0  AND opt_return_5m > 0
+      FALLING — opt_return_1m < 0  OR  opt_return_5m < 0
+
+    Prints precision, TP/FP counts, and magnitude-bucket breakdown for each
+    group so you can measure whether filtering by current direction helps.
+
+    \b
+    Example:
+        python -m src.cli ml analyze-direction-split \\
+            --model reports/sustained_with_directional/models/xgboost_sustained.pkl \\
+            --test-data data/processed/features/ \\
+            --threshold 0.70
+    """
+    import joblib
+    from pathlib import Path
+
+    from src.ml.sustained_movement_evaluator import SustainedMovementEvaluator
+    from src.ml.train_xgboost import load_features
+
+    try:
+        # --- Load artifact -------------------------------------------------------
+        click.echo(f"\nLoading model from: {model_path}")
+        artifact   = joblib.load(model_path)
+        model      = artifact["model"]
+        feat_cols  = artifact.get("feature_cols") or []
+        model_name = artifact.get("model_name", Path(model_path).stem)
+        click.echo(f"  Model    : {model_name}")
+        click.echo(f"  Features : {len(feat_cols)}")
+
+        # --- Load features -------------------------------------------------------
+        click.echo(f"\nLoading features from: {features_dir}")
+        df = load_features(features_dir, test_start_date, test_end_date)
+        click.echo(f"  Rows loaded: {len(df):,}")
+
+        if len(df) == 0:
+            click.echo("No data found for the specified date range.", err=True)
+            sys.exit(1)
+
+        # --- Chronological test split (last 30%) if no explicit dates given ------
+        if test_start_date is None and test_end_date is None:
+            dates = sorted(df["date"].unique())
+            split_idx = int(len(dates) * 0.70)
+            test_dates = set(dates[split_idx:])
+            test_df = df[df["date"].isin(test_dates)].copy()
+            click.echo(
+                f"  Test window: {min(test_dates)} → {max(test_dates)}"
+                f"  ({len(test_dates)} dates, {len(test_df):,} rows)"
+            )
+        else:
+            test_df = df.copy()
+            click.echo(f"  Test rows  : {len(test_df):,}")
+
+        # --- Resolve target column -----------------------------------------------
+        target_col = "target_sustained"
+        if target_col not in test_df.columns:
+            if "target" in test_df.columns:
+                click.echo(
+                    "\n  Note: 'target_sustained' not found; using 'target' as label proxy."
+                )
+                test_df[target_col] = test_df["target"]
+            else:
+                click.echo(
+                    "Error: neither 'target_sustained' nor 'target' column found.",
+                    err=True,
+                )
+                sys.exit(1)
+
+        # --- Run direction-split analysis ----------------------------------------
+        evaluator = SustainedMovementEvaluator(target_col=target_col)
+        evaluator.analyze_precision_by_current_direction(
+            model_name=model_name,
+            model=model,
+            feature_cols=feat_cols,
+            test_df=test_df,
+            threshold=threshold,
+        )
+
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+@ml_cli.command("test-consolidation")
+@click.option(
+    "--model",
+    "model_path",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to a .pkl model artifact.",
+)
+@click.option(
+    "--test-data",
+    "features_dir",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to features directory.",
+)
+@click.option(
+    "--test-start-date",
+    default=None,
+    help="Start date for test window (YYYY-MM-DD). Defaults to last 30% of data.",
+)
+@click.option(
+    "--test-end-date",
+    default=None,
+    help="End date for test window (YYYY-MM-DD). Defaults to last 30% of data.",
+)
+@click.option(
+    "--threshold",
+    default=0.70,
+    type=float,
+    show_default=True,
+    help="Probability threshold for firing a signal.",
+)
+@click.option(
+    "--consol-5m-pct",
+    default=1.0,
+    type=float,
+    show_default=True,
+    help="Max |opt_return_5m| to classify as consolidating (%).",
+)
+@click.option(
+    "--consol-15m-pct",
+    default=2.0,
+    type=float,
+    show_default=True,
+    help="Max |opt_return_15m| to classify as consolidating (%).",
+)
+@click.option(
+    "--output",
+    default="reports/consolidation_hypothesis/",
+    show_default=True,
+    type=click.Path(),
+    help="Directory to save JSON results.",
+)
+def test_consolidation(
+    model_path,
+    features_dir,
+    test_start_date,
+    test_end_date,
+    threshold,
+    consol_5m_pct,
+    consol_15m_pct,
+    output,
+):
+    """Test the consolidation -> breakout hypothesis.
+
+    Splits signals into two groups based on whether the option was in a tight
+    trading range (consolidating) or already moving (volatile) at signal time.
+
+    \b
+      CONSOLIDATING   : |opt_return_5m| < consol_5m_pct  AND
+                        |opt_return_15m| < consol_15m_pct
+      NON-CONSOLIDATING: everything else
+
+    If consolidating signals show substantially higher precision (>10 pp),
+    the hypothesis is confirmed and consolidation features should be added.
+
+    \b
+    Example:
+        python -m src.cli ml test-consolidation \\
+            --model reports/sustained_with_directional/models/xgboost.pkl \\
+            --test-data data/processed/features/ \\
+            --threshold 0.70 \\
+            --output reports/consolidation_hypothesis/
+    """
+    import json
+    import joblib
+    from pathlib import Path
+
+    from src.ml.sustained_movement_evaluator import SustainedMovementEvaluator
+    from src.ml.train_xgboost import load_features
+
+    try:
+        out_dir = Path(output)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # --- Load artifact -------------------------------------------------------
+        click.echo(f"\nLoading model from: {model_path}")
+        artifact   = joblib.load(model_path)
+        model      = artifact["model"]
+        feat_cols  = artifact.get("feature_cols") or []
+        model_name = artifact.get("model_name", Path(model_path).stem)
+        click.echo(f"  Model    : {model_name}")
+        click.echo(f"  Features : {len(feat_cols)}")
+
+        # --- Load features -------------------------------------------------------
+        click.echo(f"\nLoading features from: {features_dir}")
+        df = load_features(features_dir, test_start_date, test_end_date)
+        click.echo(f"  Rows loaded: {len(df):,}")
+
+        if len(df) == 0:
+            click.echo("No data found for the specified date range.", err=True)
+            sys.exit(1)
+
+        # --- Chronological test split (last 30%) if no explicit dates given ------
+        if test_start_date is None and test_end_date is None:
+            dates = sorted(df["date"].unique())
+            split_idx = int(len(dates) * 0.70)
+            test_dates = set(dates[split_idx:])
+            test_df = df[df["date"].isin(test_dates)].copy()
+            click.echo(
+                f"  Test window: {min(test_dates)} → {max(test_dates)}"
+                f"  ({len(test_dates)} dates, {len(test_df):,} rows)"
+            )
+        else:
+            test_df = df.copy()
+            click.echo(f"  Test rows  : {len(test_df):,}")
+
+        # --- Resolve target column -----------------------------------------------
+        target_col = "target_sustained"
+        if target_col not in test_df.columns:
+            if "target" in test_df.columns:
+                click.echo(
+                    "\n  Note: 'target_sustained' not found; using 'target' as label proxy."
+                )
+                test_df[target_col] = test_df["target"]
+            else:
+                click.echo(
+                    "Error: neither 'target_sustained' nor 'target' column found.",
+                    err=True,
+                )
+                sys.exit(1)
+
+        # --- Run hypothesis test -------------------------------------------------
+        evaluator = SustainedMovementEvaluator(target_col=target_col)
+        results = evaluator.analyze_precision_by_consolidation(
+            model_name=model_name,
+            model=model,
+            feature_cols=feat_cols,
+            test_df=test_df,
+            threshold=threshold,
+            consol_5m_pct=consol_5m_pct,
+            consol_15m_pct=consol_15m_pct,
+        )
+
+        # --- Save results --------------------------------------------------------
+        def _serial(obj):
+            if isinstance(obj, (bool, int, float, str)):
+                return obj
+            return str(obj)
+
+        out_path = out_dir / "consolidation_test_results.json"
+        with open(out_path, "w") as fh:
+            json.dump(results, fh, indent=2, default=_serial)
+        size_kb = out_path.stat().st_size / 1024
+        click.echo(f"  Results saved: {out_path}  ({size_kb:.1f} KB)")
+
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+@ml_cli.command("consolidation-sweep")
+@click.option(
+    "--model", "model_path", required=True, type=click.Path(exists=True),
+    help="Path to a .pkl model artifact.",
+)
+@click.option(
+    "--test-data", "features_dir", required=True, type=click.Path(exists=True),
+    help="Path to features directory.",
+)
+@click.option(
+    "--test-start-date", default=None,
+    help="Test window start (YYYY-MM-DD). Defaults to last 30% of dates.",
+)
+@click.option(
+    "--test-end-date", default=None,
+    help="Test window end (YYYY-MM-DD). Defaults to last 30% of dates.",
+)
+@click.option(
+    "--threshold", default=0.70, type=float, show_default=True,
+    help="Signal confidence threshold.",
+)
+@click.option(
+    "--min-signals", default=10, type=int, show_default=True,
+    help="Skip combinations with fewer signals than this.",
+)
+@click.option(
+    "--output", default="reports/consolidation_sweep/", show_default=True,
+    type=click.Path(), help="Directory to save JSON results.",
+)
+def consolidation_sweep(
+    model_path, features_dir, test_start_date, test_end_date,
+    threshold, min_signals, output,
+):
+    """Sweep consolidation window × tightness-threshold combinations.
+
+    Evaluates all combinations of rolling-range windows (3m–20m) against
+    multiple tightness thresholds (0.5%–3.0%) and ranks them by precision.
+    Identifies the optimal consolidation definition for use as a signal filter.
+
+    \b
+    Example:
+        python -m src.cli ml consolidation-sweep \\
+            --model reports/sustained_with_consolidation/models/xgboost.pkl \\
+            --test-data data/processed/features/ \\
+            --threshold 0.70
+    """
+    import json
+    import joblib
+    from pathlib import Path
+
+    from src.ml.sustained_movement_evaluator import SustainedMovementEvaluator
+    from src.ml.train_xgboost import load_features
+
+    try:
+        out_dir = Path(output)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        click.echo(f"\nLoading model: {model_path}")
+        artifact   = joblib.load(model_path)
+        model      = artifact["model"]
+        feat_cols  = artifact.get("feature_cols") or []
+        model_name = artifact.get("model_name", Path(model_path).stem)
+        click.echo(f"  Model    : {model_name}")
+        click.echo(f"  Features : {len(feat_cols)}")
+
+        click.echo(f"\nLoading features from: {features_dir}")
+        df = load_features(features_dir, test_start_date, test_end_date)
+        click.echo(f"  Rows loaded: {len(df):,}")
+        if len(df) == 0:
+            click.echo("No data found.", err=True); sys.exit(1)
+
+        if test_start_date is None and test_end_date is None:
+            dates     = sorted(df["date"].unique())
+            split_idx = int(len(dates) * 0.70)
+            test_dates = set(dates[split_idx:])
+            test_df   = df[df["date"].isin(test_dates)].copy()
+            click.echo(
+                f"  Test window: {min(test_dates)} → {max(test_dates)}"
+                f"  ({len(test_dates)} dates, {len(test_df):,} rows)"
+            )
+        else:
+            test_df = df.copy()
+
+        target_col = "target_sustained"
+        if target_col not in test_df.columns:
+            if "target" in test_df.columns:
+                click.echo("\n  Note: using 'target' as label proxy.")
+                test_df[target_col] = test_df["target"]
+            else:
+                click.echo("Error: no target column found.", err=True); sys.exit(1)
+
+        evaluator = SustainedMovementEvaluator(target_col=target_col)
+        results = evaluator.analyze_consolidation_parameter_sweep(
+            model_name=model_name,
+            model=model,
+            feature_cols=feat_cols,
+            test_df=test_df,
+            threshold=threshold,
+            min_signals=min_signals,
+        )
+
+        def _ser(o):
+            if isinstance(o, (bool, int, float, str)): return o
+            return str(o)
+
+        out_path = out_dir / "sweep_results.json"
+        with open(out_path, "w") as fh:
+            json.dump(results, fh, indent=2, default=_ser)
+        click.echo(f"  Results saved: {out_path}  ({out_path.stat().st_size/1024:.1f} KB)")
+
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+@ml_cli.command("analyze-call-put-split")
+@click.option(
+    "--model", "model_path", required=True, type=click.Path(exists=True),
+    help="Path to a .pkl model artifact.",
+)
+@click.option(
+    "--test-data", "features_dir", required=True, type=click.Path(exists=True),
+    help="Path to features directory.",
+)
+@click.option(
+    "--test-start-date", default=None,
+    help="Test window start date (YYYY-MM-DD).",
+)
+@click.option(
+    "--test-end-date", default=None,
+    help="Test window end date (YYYY-MM-DD).",
+)
+@click.option(
+    "--threshold", default=0.70, type=float, show_default=True,
+    help="Signal confidence threshold.",
+)
+@click.option(
+    "--output", default="reports/call_put_analysis/", show_default=True,
+    type=click.Path(), help="Directory to save JSON results.",
+)
+def analyze_call_put_split(
+    model_path, features_dir, test_start_date, test_end_date, threshold, output,
+):
+    """Analyze whether model signals equally on calls vs puts.
+
+    If the model fires on calls and puts at similar rates (~50/50) while the
+    dataset contains both types, then ~50% of signals will fail by construction
+    (the wrong option type relative to the underlying's direction).  This command
+    tests that hypothesis and, if confirmed, identifies the easy fix: adding an
+    is_call feature.
+
+    \b
+    Example:
+        python -m src.cli ml analyze-call-put-split \\
+            --model reports/sustained_with_consolidation_v2/models/xgboost.pkl \\
+            --test-data data/processed/features/ \\
+            --threshold 0.70
+    """
+    import json
+    import joblib
+    from pathlib import Path
+
+    from src.ml.sustained_movement_evaluator import SustainedMovementEvaluator
+    from src.ml.train_xgboost import load_features
+
+    try:
+        out_dir = Path(output)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        click.echo(f"\nLoading model: {model_path}")
+        artifact   = joblib.load(model_path)
+        model      = artifact["model"]
+        feat_cols  = artifact.get("feature_cols") or []
+        model_name = artifact.get("model_name", Path(model_path).stem)
+        target_col = artifact.get("target_col", "target")
+        click.echo(f"  Model    : {model_name}")
+        click.echo(f"  Features : {len(feat_cols)}")
+
+        click.echo(f"\nLoading features from: {features_dir}")
+        df = load_features(features_dir, test_start_date, test_end_date)
+        click.echo(f"  Rows loaded: {len(df):,}")
+        if len(df) == 0:
+            click.echo("No data found.", err=True); sys.exit(1)
+
+        # Resolve target column
+        if target_col not in df.columns:
+            for fallback in ("target_sustained", "target"):
+                if fallback in df.columns:
+                    target_col = fallback
+                    break
+        click.echo(f"  Target col : {target_col}")
+
+        evaluator = SustainedMovementEvaluator(target_col=target_col)
+        results = evaluator.analyze_signals_by_option_type(
+            model_name=model_name,
+            model=model,
+            feature_cols=feat_cols,
+            test_df=df,
+            threshold=threshold,
+        )
+
+        out_path = out_dir / f"{model_name}_call_put_split.json"
+        with open(out_path, "w") as fh:
+            json.dump(results, fh, indent=2)
+        click.echo(f"  Results saved: {out_path}")
+
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# train-split-models
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("train-split-models")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Directory containing *_features.csv files. Defaults to config value.",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Earliest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Latest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--confirmation-minutes",
+    default=15,
+    type=int,
+    show_default=True,
+    help="Minutes after entry to check the confirmation bar.",
+)
+@click.option(
+    "--sustain-minutes",
+    default=5,
+    type=int,
+    show_default=True,
+    help="Min consecutive bars above entry price at confirmation.",
+)
+@click.option(
+    "--n-trials",
+    default=30,
+    type=int,
+    show_default=True,
+    help="Optuna trials per model (per option type).",
+)
+@click.option(
+    "--cv-splits",
+    default=3,
+    type=int,
+    show_default=True,
+    help="TimeSeriesSplit folds inside each Optuna trial.",
+)
+@click.option(
+    "--thresholds",
+    default="0.50,0.60,0.70,0.80",
+    show_default=True,
+    help="Comma-separated evaluation thresholds.",
+)
+@click.option(
+    "--output",
+    default="reports/split_call_put_models/",
+    show_default=True,
+    type=click.Path(),
+    help="Output directory for models and evaluation results.",
+)
+def train_split_models(
+    config_dir,
+    features_dir,
+    start_date,
+    end_date,
+    confirmation_minutes,
+    sustain_minutes,
+    n_trials,
+    cv_splits,
+    thresholds,
+    output,
+):
+    """Train separate models for CALLs and PUTs to eliminate directional confusion.
+
+    When a single model trains on both call and put options simultaneously,
+    directional features (SPY return, option momentum) become noise because the
+    same direction helps calls and hurts puts.  Training type-specific models
+    allows these features to work as intended.
+
+    Pipeline (identical to sustained-movement-experiment):
+
+    \b
+    1. Load feature CSVs.
+    2. Apply SustainedMovementLabeler (confirmation / sustain windows).
+    3. Chronological 70/30 train/test split.
+    4. Train XGBoost + LightGBM separately for CALLs and PUTs (4 models total).
+    5. Evaluate each model on its type's test subset; combine results.
+    6. Save models and evaluation report.
+
+    \b
+    Example:
+        python -m src.cli ml train-split-models \\
+            --start-date 2025-03-03 --end-date 2026-02-19 \\
+            --n-trials 30 --output reports/split_call_put_models/
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import numpy as _np
+    import pandas as _pd
+
+    from src.ml.multi_model_trainer import MultiModelTrainer
+    from src.ml.sustained_movement_evaluator import SustainedMovementEvaluator
+    from src.ml.train_xgboost import load_features, _NON_FEATURE_COLS
+    from src.processing.sustained_movement_labeler import (
+        SustainedMovementLabeler,
+        MAGNITUDE_BUCKETS,
+    )
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        models_dir = out_dir / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            threshold_list = [float(t.strip()) for t in thresholds.split(",")]
+        except ValueError:
+            click.echo(
+                f"Error: --thresholds must be comma-separated floats, got: {thresholds!r}",
+                err=True,
+            )
+            sys.exit(1)
+
+        click.echo("\n" + "=" * 70)
+        click.echo("  SEPARATE CALL / PUT MODEL TRAINING  (Step 57)")
+        click.echo("=" * 70)
+        click.echo(f"  Features dir         : {feat_dir}")
+        click.echo(f"  Date range           : {start_date or 'all'} → {end_date or 'all'}")
+        click.echo(f"  Confirmation window  : {confirmation_minutes} min")
+        click.echo(f"  Sustain requirement  : {sustain_minutes} consecutive min")
+        click.echo(f"  Optuna trials/model  : {n_trials}  (4 models × {n_trials} = "
+                   f"{4*n_trials} total trials)")
+        click.echo(f"  CV splits            : {cv_splits}")
+        click.echo(f"  Eval thresholds      : {', '.join(f'{t:.0%}' for t in threshold_list)}")
+        click.echo(f"  Output dir           : {out_dir}")
+        click.echo("=" * 70)
+
+        # ── Step 1: Load feature CSVs ──────────────────────────────────
+        click.echo("\n[1/5] Loading feature CSVs…")
+        df = load_features(feat_dir, start_date, end_date)
+        if df.empty:
+            click.echo(
+                f"Error: no feature data found in {feat_dir} for "
+                f"{start_date} → {end_date}",
+                err=True,
+            )
+            sys.exit(1)
+        n_dates = df["date"].nunique() if "date" in df.columns else "?"
+        click.echo(f"  Loaded {len(df):,} rows across {n_dates} dates")
+
+        if "contract_type" not in df.columns:
+            click.echo("Error: 'contract_type' column not found in feature data.", err=True)
+            sys.exit(1)
+
+        calls_total = int((df["contract_type"] == 1).sum())
+        puts_total  = int((df["contract_type"] == 0).sum())
+        click.echo(f"  CALLs: {calls_total:,}  ({calls_total/len(df):.1%})")
+        click.echo(f"  PUTs : {puts_total:,}  ({puts_total/len(df):.1%})")
+
+        # ── Step 2: Apply SustainedMovementLabeler ─────────────────────
+        click.echo(
+            f"\n[2/5] Applying SustainedMovementLabeler "
+            f"(conf={confirmation_minutes}min, sustain={sustain_minutes}min)…"
+        )
+        labeler_cfg = {
+            "sustained_movement": {
+                "confirmation_minutes": confirmation_minutes,
+                "sustain_minutes": sustain_minutes,
+            }
+        }
+        labeler = SustainedMovementLabeler(labeler_cfg)
+        df = labeler.label(df)
+        stats = labeler.validate(df)
+
+        click.echo(f"  Total rows      : {stats['n_total']:,}")
+        click.echo(f"  Positive labels : {stats['n_positive']:,}  ({stats['positive_rate']:.2%})")
+        click.echo(f"  Coverage        : {stats['coverage_pct']:.1f}% rows have confirmation bar")
+        click.echo("\n  Magnitude breakdown:")
+        for bucket in MAGNITUDE_BUCKETS:
+            count = stats["magnitude_breakdown"].get(bucket, 0)
+            pct   = count / max(stats["n_total"], 1) * 100
+            bar   = "█" * max(1, int(pct / 2))
+            click.echo(f"    {bucket:<12}: {count:>6,}  ({pct:5.1f}%)  {bar}")
+
+        # ── Step 3: Chronological train/test split ─────────────────────
+        click.echo("\n[3/5] Splitting data (70% train / 30% test, chronological)…")
+        n_total   = len(df)
+        split_idx = int(n_total * 0.70)
+        train_df  = df.iloc[:split_idx].reset_index(drop=True)
+        test_df   = df.iloc[split_idx:].reset_index(drop=True)
+
+        click.echo(
+            f"  Train: {len(train_df):,} rows  "
+            f"({int(train_df['target_sustained'].sum())} positives)  "
+            f"calls={int((train_df['contract_type']==1).sum()):,}  "
+            f"puts={int((train_df['contract_type']==0).sum()):,}"
+        )
+        click.echo(
+            f"  Test : {len(test_df):,} rows  "
+            f"({int(test_df['target_sustained'].sum())} positives)  "
+            f"calls={int((test_df['contract_type']==1).sum()):,}  "
+            f"puts={int((test_df['contract_type']==0).sum()):,}"
+        )
+
+        # Determine feature columns (same exclusions as sustained-movement-experiment)
+        feature_cols = [
+            c for c in df.columns
+            if c not in _NON_FEATURE_COLS
+            and c not in {
+                "target_sustained", "gain_pct_at_confirmation",
+                "magnitude_bucket", "sustain_minutes_actual",
+            }
+        ]
+        feature_cols = sorted(feature_cols)
+        click.echo(f"  Feature columns: {len(feature_cols)}")
+        click.echo(f"  (contract_type will be dropped within each type's model)")
+
+        # ── Step 4: Train split models ─────────────────────────────────
+        click.echo(
+            f"\n[4/5] Training XGBoost + LightGBM  ×  CALL / PUT  "
+            f"({n_trials} Optuna trials each, 4 total models)…"
+        )
+        click.echo("  (This will take several minutes per model)")
+
+        trainer = MultiModelTrainer(n_trials=n_trials, cv_splits=cv_splits)
+        artifacts = trainer.train_call_put_models_separately(
+            df=train_df,
+            target_col="target_sustained",
+            feature_cols=feature_cols,
+        )
+
+        click.echo("\n  Training complete:")
+        for name, art in artifacts.items():
+            click.echo(
+                f"    {name:<22}: "
+                f"Optuna={art.get('optimization_score',0):.4f}  "
+                f"val_prec@0.7={art.get('val_precision_at_0_70',0):.4f}"
+            )
+
+        # Save artifacts
+        saved_models = trainer.save_artifacts(
+            {k: v for k, v in artifacts.items()}, models_dir
+        )
+        click.echo(f"\n  Models saved to: {models_dir}/")
+        for name, path in saved_models.items():
+            click.echo(f"    {path.name:<40}  {path.stat().st_size/1024:>6.1f} KB")
+
+        # ── Step 5: Evaluate split models ──────────────────────────────
+        click.echo(f"\n[5/5] Evaluating split models on test set ({len(test_df):,} rows)…")
+
+        evaluator = SustainedMovementEvaluator(
+            thresholds=threshold_list,
+            target_col="target_sustained",
+        )
+
+        all_eval: dict = {}
+        for thresh in threshold_list:
+            click.echo(f"\n  --- Threshold {thresh:.0%} ---")
+            call_art = artifacts["xgboost_call"]
+            put_art  = artifacts["xgboost_put"]
+            xgb_res  = evaluator.evaluate_split_models(
+                call_artifact=call_art,
+                put_artifact=put_art,
+                test_df=test_df,
+                threshold=thresh,
+            )
+            xgb_res["model"] = "xgboost"
+
+            lgbm_call_art = artifacts["lightgbm_call"]
+            lgbm_put_art  = artifacts["lightgbm_put"]
+            lgbm_res = evaluator.evaluate_split_models(
+                call_artifact=lgbm_call_art,
+                put_artifact=lgbm_put_art,
+                test_df=test_df,
+                threshold=thresh,
+            )
+            lgbm_res["model"] = "lightgbm"
+
+            all_eval[str(thresh)] = {
+                "xgboost":  xgb_res,
+                "lightgbm": lgbm_res,
+            }
+
+        # Save evaluation results
+        eval_path = out_dir / "split_model_eval.json"
+        with open(eval_path, "w") as fh:
+            _json.dump(all_eval, fh, indent=2)
+        click.echo(f"\n  Evaluation saved: {eval_path}")
+
+        # Summary table
+        click.echo(f"\n{'='*70}")
+        click.echo("  RESULTS SUMMARY")
+        click.echo(f"{'='*70}")
+        click.echo(f"  {'Model':<12}  {'Threshold':>10}  {'Signals':>8}  "
+                   f"{'Precision':>10}  {'vs baseline':>12}")
+        click.echo("  " + "-" * 60)
+        for t_str, t_res in all_eval.items():
+            for mname, mres in t_res.items():
+                click.echo(
+                    f"  {mname:<12}  {float(t_str):>9.0%}  "
+                    f"{mres['combined_signals']:>8,}  "
+                    f"{mres['combined_precision']:>9.1%}  "
+                    f"{mres['improvement_vs_mixed']:>+11.1%}"
+                )
+        click.echo(f"{'='*70}")
+        click.echo("\n  Baseline (mixed XGBoost @ 70%): 34.3% precision")
+        click.echo(f"  Output dir: {out_dir}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# train-baseline-split  (Step 58)
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("train-baseline-split")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Directory containing *_features.csv files (65-feature baseline).",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Earliest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Latest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--confirmation-minutes",
+    default=15,
+    type=int,
+    show_default=True,
+    help="Minutes after entry to check the confirmation bar.",
+)
+@click.option(
+    "--sustain-minutes",
+    default=5,
+    type=int,
+    show_default=True,
+    help="Min consecutive bars above entry price at confirmation.",
+)
+@click.option(
+    "--n-trials",
+    default=50,
+    type=int,
+    show_default=True,
+    help="Optuna trials per model (per option type).",
+)
+@click.option(
+    "--cv-splits",
+    default=3,
+    type=int,
+    show_default=True,
+    help="TimeSeriesSplit folds inside each Optuna trial.",
+)
+@click.option(
+    "--thresholds",
+    default="0.50,0.60,0.70,0.80",
+    show_default=True,
+    help="Comma-separated evaluation thresholds.",
+)
+@click.option(
+    "--output",
+    default="reports/baseline_split_models/",
+    show_default=True,
+    type=click.Path(),
+    help="Output directory for models and evaluation results.",
+)
+def train_baseline_split(
+    config_dir,
+    features_dir,
+    start_date,
+    end_date,
+    confirmation_minutes,
+    sustain_minutes,
+    n_trials,
+    cv_splits,
+    thresholds,
+    output,
+):
+    """Train separate CALL/PUT models on the original 65-feature baseline (Step 58).
+
+    This is the definitive test of whether the call/put split architecture
+    improves precision when using the CLEAN 65-feature baseline — before
+    directional or consolidation features were added.
+
+    The 65-feature set contains no directional features that become noisy when
+    trained on mixed call/put data, so any improvement from splitting is a pure
+    architectural benefit, not a feature artefact.
+
+    Pipeline (identical to train-split-models):
+
+    \b
+    1. Load 65-feature CSVs.
+    2. Apply SustainedMovementLabeler (confirmation / sustain windows).
+    3. Chronological 70/30 train/test split.
+    4. Train XGBoost + LightGBM for CALLs and PUTs separately (4 models).
+    5. Evaluate each model on its type's test subset; combine.
+    6. Save models and evaluation report.
+
+    \b
+    Baseline reference (mixed models, 65 features):
+      XGBoost @ 0.70 → 33.7% precision  (Step 53 first run)
+
+    \b
+    Example:
+        python -m src.cli ml train-baseline-split \\
+            --start-date 2025-03-03 --end-date 2026-02-19 \\
+            --n-trials 50 --output reports/baseline_split_models/
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import numpy as _np
+    import pandas as _pd
+
+    from src.ml.multi_model_trainer import MultiModelTrainer
+    from src.ml.sustained_movement_evaluator import SustainedMovementEvaluator
+    from src.ml.train_xgboost import load_features, _NON_FEATURE_COLS
+    from src.processing.sustained_movement_labeler import (
+        SustainedMovementLabeler,
+        MAGNITUDE_BUCKETS,
+    )
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        models_dir = out_dir / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            threshold_list = [float(t.strip()) for t in thresholds.split(",")]
+        except ValueError:
+            click.echo(
+                f"Error: --thresholds must be comma-separated floats, got: {thresholds!r}",
+                err=True,
+            )
+            sys.exit(1)
+
+        click.echo("\n" + "=" * 70)
+        click.echo("  BASELINE SPLIT MODELS: 65 Features, Separate CALL/PUT  (Step 58)")
+        click.echo("=" * 70)
+        click.echo(f"  Features dir         : {feat_dir}")
+        click.echo(f"  Date range           : {start_date or 'all'} → {end_date or 'all'}")
+        click.echo(f"  Confirmation window  : {confirmation_minutes} min")
+        click.echo(f"  Sustain requirement  : {sustain_minutes} consecutive min")
+        click.echo(f"  Optuna trials/model  : {n_trials}  (4 models total)")
+        click.echo(f"  CV splits            : {cv_splits}")
+        click.echo(f"  Eval thresholds      : {', '.join(f'{t:.0%}' for t in threshold_list)}")
+        click.echo(f"  Output dir           : {out_dir}")
+        click.echo("=" * 70)
+
+        # ── Step 1: Load feature CSVs ──────────────────────────────────
+        click.echo("\n[1/5] Loading feature CSVs…")
+        df = load_features(feat_dir, start_date, end_date)
+        if df.empty:
+            click.echo(
+                f"Error: no feature data found in {feat_dir} for "
+                f"{start_date} → {end_date}",
+                err=True,
+            )
+            sys.exit(1)
+        n_dates = df["date"].nunique() if "date" in df.columns else "?"
+        n_cols  = len(df.columns)
+        click.echo(f"  Loaded {len(df):,} rows across {n_dates} dates  ({n_cols} columns)")
+
+        if "contract_type" not in df.columns:
+            click.echo("Error: 'contract_type' column not found in feature data.", err=True)
+            sys.exit(1)
+
+        calls_total = int((df["contract_type"] == 1).sum())
+        puts_total  = int((df["contract_type"] == 0).sum())
+        click.echo(f"  CALLs: {calls_total:,}  ({calls_total/len(df):.1%})")
+        click.echo(f"  PUTs : {puts_total:,}  ({puts_total/len(df):.1%})")
+
+        # Sanity-check: confirm this is the 65-feature baseline
+        expected_max_cols = 90  # 65 features + ~16 metadata/target cols
+        if n_cols > expected_max_cols:
+            click.echo(
+                f"\n  WARNING: {n_cols} columns found — expected ≤{expected_max_cols} "
+                f"for the 65-feature baseline.\n"
+                f"  Run 'ml generate-features' after removing directional/consolidation "
+                f"methods from ml_feature_engineer.py, then retry.",
+                err=True,
+            )
+            sys.exit(1)
+
+        # ── Step 2: Apply SustainedMovementLabeler ─────────────────────
+        click.echo(
+            f"\n[2/5] Applying SustainedMovementLabeler "
+            f"(conf={confirmation_minutes}min, sustain={sustain_minutes}min)…"
+        )
+        labeler_cfg = {
+            "sustained_movement": {
+                "confirmation_minutes": confirmation_minutes,
+                "sustain_minutes": sustain_minutes,
+            }
+        }
+        labeler = SustainedMovementLabeler(labeler_cfg)
+        df = labeler.label(df)
+        stats = labeler.validate(df)
+
+        click.echo(f"  Total rows      : {stats['n_total']:,}")
+        click.echo(f"  Positive labels : {stats['n_positive']:,}  ({stats['positive_rate']:.2%})")
+        click.echo(f"  Coverage        : {stats['coverage_pct']:.1f}% rows have confirmation bar")
+        click.echo("\n  Magnitude breakdown:")
+        for bucket in MAGNITUDE_BUCKETS:
+            count = stats["magnitude_breakdown"].get(bucket, 0)
+            pct   = count / max(stats["n_total"], 1) * 100
+            bar   = "█" * max(1, int(pct / 2))
+            click.echo(f"    {bucket:<12}: {count:>6,}  ({pct:5.1f}%)  {bar}")
+
+        # ── Step 3: Chronological train/test split ─────────────────────
+        click.echo("\n[3/5] Splitting data (70% train / 30% test, chronological)…")
+        n_total   = len(df)
+        split_idx = int(n_total * 0.70)
+        train_df  = df.iloc[:split_idx].reset_index(drop=True)
+        test_df   = df.iloc[split_idx:].reset_index(drop=True)
+
+        click.echo(
+            f"  Train: {len(train_df):,} rows  "
+            f"({int(train_df['target_sustained'].sum())} positives)  "
+            f"calls={int((train_df['contract_type']==1).sum()):,}  "
+            f"puts={int((train_df['contract_type']==0).sum()):,}"
+        )
+        click.echo(
+            f"  Test : {len(test_df):,} rows  "
+            f"({int(test_df['target_sustained'].sum())} positives)  "
+            f"calls={int((test_df['contract_type']==1).sum()):,}  "
+            f"puts={int((test_df['contract_type']==0).sum()):,}"
+        )
+
+        feature_cols = [
+            c for c in df.columns
+            if c not in _NON_FEATURE_COLS
+            and c not in {
+                "target_sustained", "gain_pct_at_confirmation",
+                "magnitude_bucket", "sustain_minutes_actual",
+            }
+        ]
+        feature_cols = sorted(feature_cols)
+        click.echo(f"  Feature columns: {len(feature_cols)}  "
+                   f"(contract_type dropped within each type's model)")
+
+        # ── Step 4: Train split models ─────────────────────────────────
+        click.echo(
+            f"\n[4/5] Training XGBoost + LightGBM  ×  CALL / PUT  "
+            f"({n_trials} Optuna trials each, 4 total models)…"
+        )
+        click.echo("  (This will take several minutes per model)")
+
+        trainer = MultiModelTrainer(n_trials=n_trials, cv_splits=cv_splits)
+        artifacts = trainer.train_call_put_models_separately(
+            df=train_df,
+            target_col="target_sustained",
+            feature_cols=feature_cols,
+        )
+
+        click.echo("\n  Training complete:")
+        for name, art in artifacts.items():
+            click.echo(
+                f"    {name:<22}: "
+                f"Optuna={art.get('optimization_score',0):.4f}  "
+                f"val_prec@0.7={art.get('val_precision_at_0_70',0):.4f}"
+            )
+
+        saved_models = trainer.save_artifacts(
+            {k: v for k, v in artifacts.items()}, models_dir
+        )
+        click.echo(f"\n  Models saved to: {models_dir}/")
+        for name, path in saved_models.items():
+            click.echo(f"    {path.name:<40}  {path.stat().st_size/1024:>6.1f} KB")
+
+        # ── Step 5: Evaluate split models ──────────────────────────────
+        click.echo(f"\n[5/5] Evaluating split models on test set ({len(test_df):,} rows)…")
+
+        evaluator = SustainedMovementEvaluator(
+            thresholds=threshold_list,
+            target_col="target_sustained",
+        )
+
+        all_eval: dict = {}
+        for thresh in threshold_list:
+            click.echo(f"\n  --- Threshold {thresh:.0%} ---")
+            xgb_res = evaluator.evaluate_split_models(
+                call_artifact=artifacts["xgboost_call"],
+                put_artifact=artifacts["xgboost_put"],
+                test_df=test_df,
+                threshold=thresh,
+            )
+            xgb_res["model"] = "xgboost"
+
+            lgbm_res = evaluator.evaluate_split_models(
+                call_artifact=artifacts["lightgbm_call"],
+                put_artifact=artifacts["lightgbm_put"],
+                test_df=test_df,
+                threshold=thresh,
+            )
+            lgbm_res["model"] = "lightgbm"
+
+            all_eval[str(thresh)] = {
+                "xgboost":  xgb_res,
+                "lightgbm": lgbm_res,
+            }
+
+        # Save evaluation results
+        eval_path = out_dir / "baseline_split_eval.json"
+        with open(eval_path, "w") as fh:
+            _json.dump(all_eval, fh, indent=2)
+        click.echo(f"\n  Evaluation saved: {eval_path}")
+
+        # Summary table
+        click.echo(f"\n{'='*70}")
+        click.echo("  RESULTS SUMMARY  (baseline = 33.7% mixed XGBoost @ 70%)")
+        click.echo(f"{'='*70}")
+        click.echo(f"  {'Model':<12}  {'Threshold':>10}  {'Signals':>8}  "
+                   f"{'Precision':>10}  {'vs baseline':>12}")
+        click.echo("  " + "-" * 60)
+        for t_str, t_res in all_eval.items():
+            for mname, mres in t_res.items():
+                click.echo(
+                    f"  {mname:<12}  {float(t_str):>9.0%}  "
+                    f"{mres['combined_signals']:>8,}  "
+                    f"{mres['combined_precision']:>9.1%}  "
+                    f"{mres['improvement_vs_mixed']:>+11.1%}"
+                )
+        click.echo(f"{'='*70}")
+        click.echo("\n  Reference: mixed 65-feature XGBoost @ 70% → 33.7% precision (Step 53)")
+        click.echo(f"  Output dir: {out_dir}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# generate-spy-labels
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("generate-spy-labels")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Directory containing *_features.csv files. Defaults to config value.",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Earliest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Latest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--lookforward-minutes",
+    default=20,
+    type=int,
+    show_default=True,
+    help="Minutes ahead to check for the SPY confirmation bar.",
+)
+@click.option(
+    "--min-move-pct",
+    default=0.2,
+    type=float,
+    show_default=True,
+    help="Minimum SPY % gain required at the confirmation bar.",
+)
+@click.option(
+    "--sustain-minutes",
+    default=5,
+    type=int,
+    show_default=True,
+    help="Consecutive bars after confirmation that must stay above entry.",
+)
+@click.option(
+    "--output",
+    default=None,
+    help="Output directory. Defaults to data/processed/spy_labels.",
+)
+def generate_spy_labels(
+    config_dir,
+    features_dir,
+    start_date,
+    end_date,
+    lookforward_minutes,
+    min_move_pct,
+    sustain_minutes,
+    output,
+):
+    """Label each SPY minute bar by whether it makes a sustained upward move.
+
+    Loads feature CSVs, applies SPYMovementLabeler, deduplicates to one row
+    per (date, minutes_since_open), and saves the labeled per-minute dataset
+    as a single CSV for inspection or downstream use.
+
+    \b
+    Adds four columns:
+      spy_target           : 1 if SPY moves up >= min-move-pct% and sustains
+      spy_gain_at_conf     : actual % gain at the confirmation bar
+      spy_max_gain_window  : max % gain in the full forward window
+      spy_magnitude_bucket : gain magnitude bucket label
+
+    \b
+    Example:
+        python -m src.cli ml generate-spy-labels \\
+            --start-date 2025-03-03 --end-date 2026-02-19 \\
+            --lookforward-minutes 20 --min-move-pct 0.2 --sustain-minutes 5
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import pandas as _pd
+
+    from src.ml.train_xgboost import load_features
+    from src.processing.spy_movement_labeler import (
+        SPYMovementLabeler,
+        SPY_MAGNITUDE_BUCKETS,
+    )
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output) if output else _Path("data/processed/spy_labels")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        click.echo("\n" + "=" * 70)
+        click.echo("  GENERATE SPY MOVEMENT LABELS")
+        click.echo("=" * 70)
+        click.echo(f"  Features dir:          {feat_dir}")
+        click.echo(f"  Date range:            {start_date or 'all'} -> {end_date or 'all'}")
+        click.echo(f"  Lookforward window:    {lookforward_minutes} min")
+        click.echo(f"  Min SPY move:          {min_move_pct}%")
+        click.echo(f"  Sustain requirement:   {sustain_minutes} consecutive bars")
+        click.echo(f"  Output dir:            {out_dir}")
+        click.echo("=" * 70)
+
+        # -- Step 1: Load feature CSVs --
+        click.echo("\n[1/3] Loading feature CSVs...")
+        df = load_features(feat_dir, start_date, end_date)
+        if df.empty:
+            click.echo(
+                f"Error: no feature data found in {feat_dir} for "
+                f"{start_date} -> {end_date}",
+                err=True,
+            )
+            sys.exit(1)
+        n_dates = df["date"].nunique() if "date" in df.columns else "?"
+        click.echo(f"  Loaded {len(df):,} rows across {n_dates} dates")
+
+        # -- Step 2: Apply SPYMovementLabeler --
+        click.echo(
+            f"\n[2/3] Applying SPYMovementLabeler "
+            f"(lookforward={lookforward_minutes}min, "
+            f"min_move={min_move_pct}%, sustain={sustain_minutes}min)..."
+        )
+        labeler = SPYMovementLabeler(
+            lookforward_minutes=lookforward_minutes,
+            min_move_pct=min_move_pct,
+            sustained_minutes=sustain_minutes,
+        )
+        df = labeler.label(df)
+        stats = labeler.validate(df)
+
+        click.echo(f"  Total rows:      {stats['n_total']:,}")
+        click.echo(f"  Positive labels: {stats['n_positive']:,}  ({stats['positive_rate']:.2%})")
+        click.echo(f"  Coverage:        {stats['coverage_pct']:.1f}% rows have confirmation bar")
+        click.echo(f"  Avg SPY gain:    {stats['avg_spy_gain_pct']:.3f}% (when positive)")
+        click.echo("\n  Magnitude breakdown:")
+        for bucket in SPY_MAGNITUDE_BUCKETS:
+            count = stats["magnitude_breakdown"].get(bucket, 0)
+            pct   = count / max(stats["n_total"], 1) * 100
+            bar   = "X" * max(1, int(pct / 2))
+            click.echo(f"    {bucket:<12}: {count:>6,}  ({pct:5.1f}%)  {bar}")
+
+        # -- Step 3: Deduplicate to per-minute and save --
+        click.echo("\n[3/3] Deduplicating to per-(date, minutes_since_open) and saving...")
+
+        _TIME_COLS_KEEP = {
+            "date", "minutes_since_open", "hour_et", "minute_et",
+            "minute_of_day", "pct_day_elapsed", "is_morning", "is_last_hour",
+            "day_of_week",
+        }
+        keep_cols = [
+            c for c in df.columns
+            if c.startswith("spy_") or c in _TIME_COLS_KEEP
+        ]
+        keep_cols = [c for c in keep_cols if c in df.columns]
+
+        per_min_df = (
+            df[keep_cols]
+            .drop_duplicates(subset=["date", "minutes_since_open"])
+            .sort_values(["date", "minutes_since_open"])
+            .reset_index(drop=True)
+        )
+
+        out_csv = out_dir / "spy_labeled_per_minute.csv"
+        per_min_df.to_csv(out_csv, index=False)
+
+        out_json = out_dir / "spy_label_stats.json"
+        with open(out_json, "w") as fh:
+            _json.dump(
+                {
+                    **stats,
+                    "lookforward_minutes": lookforward_minutes,
+                    "min_move_pct": min_move_pct,
+                    "sustained_minutes": sustain_minutes,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "n_per_minute_rows": len(per_min_df),
+                    "n_dates": int(per_min_df["date"].nunique()),
+                    "feature_cols": [
+                        c for c in per_min_df.columns
+                        if c not in {
+                            "date", "minutes_since_open",
+                            "spy_target", "spy_gain_at_conf",
+                            "spy_max_gain_window", "spy_magnitude_bucket",
+                        }
+                    ],
+                },
+                fh,
+                indent=2,
+                default=str,
+            )
+
+        click.echo(f"  Per-minute rows: {len(per_min_df):,}")
+        click.echo(f"  Dates:           {per_min_df['date'].nunique()}")
+        click.echo(f"  Columns:         {len(per_min_df.columns)}")
+        click.echo(f"\n  Saved: {out_csv}")
+        click.echo(f"  Saved: {out_json}")
+        click.echo("\nDone.")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# train-spy-model
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("train-spy-model")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Directory containing *_features.csv files. Defaults to config value.",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Earliest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Latest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--lookforward-minutes",
+    default=20,
+    type=int,
+    show_default=True,
+    help="Minutes ahead to check for the SPY confirmation bar.",
+)
+@click.option(
+    "--min-move-pct",
+    default=0.2,
+    type=float,
+    show_default=True,
+    help="Minimum SPY % gain at the confirmation bar for a positive label.",
+)
+@click.option(
+    "--sustain-minutes",
+    default=5,
+    type=int,
+    show_default=True,
+    help="Consecutive bars after confirmation that must stay above entry.",
+)
+@click.option(
+    "--n-trials",
+    default=30,
+    type=int,
+    show_default=True,
+    help="Optuna trials per model type.",
+)
+@click.option(
+    "--cv-splits",
+    default=3,
+    type=int,
+    show_default=True,
+    help="TimeSeriesSplit folds inside each Optuna trial.",
+)
+@click.option(
+    "--thresholds",
+    default="0.50,0.60,0.70,0.80",
+    show_default=True,
+    help="Comma-separated evaluation thresholds.",
+)
+@click.option(
+    "--output",
+    default=None,
+    help="Output directory. Defaults to reports/spy_movement_model.",
+)
+def train_spy_model(
+    config_dir,
+    features_dir,
+    start_date,
+    end_date,
+    lookforward_minutes,
+    min_move_pct,
+    sustain_minutes,
+    n_trials,
+    cv_splits,
+    thresholds,
+    output,
+):
+    """Train models to predict SPY directional movement.
+
+    Unlike the sustained-movement experiment (which predicts individual
+    OPTION price direction), this command predicts whether SPY itself will
+    rise at least min-move-pct% within lookforward-minutes bars and sustain
+    that gain for sustain-minutes consecutive bars.
+
+    \b
+    Key differences vs sustained-movement-experiment:
+      - Labels are shared across contracts (one label per SPY minute)
+      - Training rows = unique (date, minutes_since_open) -- no per-contract noise
+      - Features = SPY technical indicators + calendar/time features only
+      - Target column: spy_target (1 = SPY up-move confirmed + sustained)
+
+    \b
+    Pipeline:
+    1. Load feature CSVs
+    2. Apply SPYMovementLabeler (adds spy_target + metadata)
+    3. Deduplicate to one row per (date, minutes_since_open)
+    4. Select SPY technical + time/calendar features
+    5. Chronological 70/30 train/test split
+    6. Train XGBoost + LightGBM + RandomForest with Optuna
+    7. Evaluate and report precision-by-magnitude
+
+    \b
+    Example:
+        python -m src.cli ml train-spy-model \\
+            --start-date 2025-03-03 --end-date 2026-02-19 \\
+            --lookforward-minutes 20 --min-move-pct 0.2 --sustain-minutes 5 \\
+            --n-trials 50 --output reports/spy_movement_model/
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import numpy as _np
+    import pandas as _pd
+
+    from src.ml.multi_model_trainer import MultiModelTrainer
+    from src.ml.sustained_movement_evaluator import SustainedMovementEvaluator
+    from src.ml.train_xgboost import load_features
+    from src.processing.spy_movement_labeler import (
+        SPYMovementLabeler,
+        SPY_MAGNITUDE_BUCKETS,
+    )
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output) if output else _Path("reports/spy_movement_model")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        models_dir = out_dir / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            threshold_list = [float(t.strip()) for t in thresholds.split(",")]
+        except ValueError:
+            click.echo(
+                f"Error: --thresholds must be comma-separated floats, "
+                f"got: {thresholds!r}",
+                err=True,
+            )
+            sys.exit(1)
+
+        click.echo("\n" + "=" * 70)
+        click.echo("  SPY MOVEMENT MODEL -- STEP 59")
+        click.echo("=" * 70)
+        click.echo(f"  Features dir:          {feat_dir}")
+        click.echo(f"  Date range:            {start_date or 'all'} -> {end_date or 'all'}")
+        click.echo(f"  Lookforward window:    {lookforward_minutes} min")
+        click.echo(f"  Min SPY move:          {min_move_pct}%")
+        click.echo(f"  Sustain requirement:   {sustain_minutes} consecutive bars")
+        click.echo(f"  Optuna trials/model:   {n_trials}")
+        click.echo(f"  CV splits:             {cv_splits}")
+        click.echo(f"  Eval thresholds:       {', '.join(f'{t:.0%}' for t in threshold_list)}")
+        click.echo(f"  Output dir:            {out_dir}")
+        click.echo("=" * 70)
+
+        # -- Step 1: Load feature CSVs --
+        click.echo("\n[1/6] Loading feature CSVs...")
+        df = load_features(feat_dir, start_date, end_date)
+        if df.empty:
+            click.echo(
+                f"Error: no feature data found in {feat_dir} for "
+                f"{start_date} -> {end_date}",
+                err=True,
+            )
+            sys.exit(1)
+        n_dates = df["date"].nunique() if "date" in df.columns else "?"
+        click.echo(f"  Loaded {len(df):,} rows across {n_dates} dates")
+
+        # -- Step 2: Apply SPYMovementLabeler --
+        click.echo(
+            f"\n[2/6] Applying SPYMovementLabeler "
+            f"(lookforward={lookforward_minutes}min, "
+            f"min_move={min_move_pct}%, sustain={sustain_minutes}min)..."
+        )
+        labeler = SPYMovementLabeler(
+            lookforward_minutes=lookforward_minutes,
+            min_move_pct=min_move_pct,
+            sustained_minutes=sustain_minutes,
+        )
+        df = labeler.label(df)
+        stats = labeler.validate(df)
+
+        click.echo(f"  Total rows (all contracts): {stats['n_total']:,}")
+        click.echo(f"  Positive labels:            {stats['n_positive']:,}  ({stats['positive_rate']:.2%})")
+        click.echo(f"  Coverage:                   {stats['coverage_pct']:.1f}% rows have confirmation bar")
+        click.echo("\n  SPY magnitude breakdown:")
+        for bucket in SPY_MAGNITUDE_BUCKETS:
+            count = stats["magnitude_breakdown"].get(bucket, 0)
+            pct   = count / max(stats["n_total"], 1) * 100
+            bar   = "X" * max(1, int(pct / 2))
+            click.echo(f"    {bucket:<12}: {count:>6,}  ({pct:5.1f}%)  {bar}")
+
+        # -- Step 3: Deduplicate to per-minute rows --
+        click.echo("\n[3/6] Deduplicating to one row per (date, minutes_since_open)...")
+
+        _SPY_LABEL_COLS = {
+            "spy_target", "spy_gain_at_conf",
+            "spy_max_gain_window", "spy_magnitude_bucket",
+        }
+        _TIME_COLS = {
+            "minutes_since_open", "hour_et", "minute_et", "minute_of_day",
+            "pct_day_elapsed", "is_morning", "is_last_hour",
+            "day_of_week", "is_monday", "is_friday",
+        }
+        _SPY_RAW_COLS = {"spy_open", "spy_high", "spy_low"}
+
+        keep_cols = [
+            c for c in df.columns
+            if (
+                (c.startswith("spy_") and c not in _SPY_RAW_COLS)
+                or c in _TIME_COLS
+                or c == "date"
+            )
+        ]
+
+        spy_df = (
+            df[keep_cols]
+            .drop_duplicates(subset=["date", "minutes_since_open"])
+            .sort_values(["date", "minutes_since_open"])
+            .reset_index(drop=True)
+        )
+
+        click.echo(f"  Per-minute rows: {len(spy_df):,}")
+        click.echo(f"  Dates:           {spy_df['date'].nunique()}")
+        click.echo(
+            f"  Positive rate after dedup: "
+            f"{spy_df['spy_target'].mean():.2%} "
+            f"({int(spy_df['spy_target'].sum())} positives)"
+        )
+
+        # -- Step 4: Select feature columns --
+        click.echo("\n[4/6] Selecting feature columns...")
+
+        feature_cols = sorted([
+            c for c in spy_df.columns
+            if c not in _SPY_LABEL_COLS
+            and c not in {"date", "minutes_since_open"}
+            and c not in _SPY_RAW_COLS
+        ])
+        click.echo(f"  Feature columns: {len(feature_cols)}")
+        click.echo("  Features (alphabetical):")
+        for i, col in enumerate(feature_cols, start=1):
+            click.echo(f"    {i:>3}. {col}")
+
+        if len(feature_cols) < 5:
+            click.echo(
+                "\n  ERROR: Too few feature columns. "
+                "Check that spy_* columns are present in feature CSVs.",
+                err=True,
+            )
+            sys.exit(1)
+
+        # -- Step 5: Chronological train/test split --
+        click.echo("\n[5/6] Splitting data (70% train / 30% test, chronological)...")
+        n_total   = len(spy_df)
+        split_idx = int(n_total * 0.70)
+        train_df  = spy_df.iloc[:split_idx].reset_index(drop=True)
+        test_df   = spy_df.iloc[split_idx:].reset_index(drop=True)
+
+        click.echo(
+            f"  Train: {len(train_df):,} rows  "
+            f"({int(train_df['spy_target'].sum())} positives | "
+            f"{train_df['spy_target'].mean():.2%} rate)"
+        )
+        click.echo(
+            f"  Test:  {len(test_df):,} rows  "
+            f"({int(test_df['spy_target'].sum())} positives | "
+            f"{test_df['spy_target'].mean():.2%} rate)"
+        )
+
+        if int(train_df["spy_target"].sum()) < 20:
+            click.echo(
+                "\n  WARNING: Very few positive labels in training set. "
+                "Consider adjusting --lookforward-minutes or --min-move-pct.",
+                err=True,
+            )
+
+        # -- Step 6: Train + Evaluate --
+        click.echo(
+            f"\n[6/6] Training XGBoost + LightGBM + RandomForest "
+            f"({n_trials} Optuna trials each)..."
+        )
+        click.echo("  (This may take several minutes)")
+
+        trainer = MultiModelTrainer(n_trials=n_trials, cv_splits=cv_splits)
+        artifacts = trainer.train(
+            df=train_df,
+            target_col="spy_target",
+            feature_cols=feature_cols,
+        )
+
+        click.echo("\n  Training complete:")
+        for model_name, artifact in artifacts.items():
+            opt_score = artifact.get("optimization_score", 0.0)
+            val_prec  = artifact.get("val_precision_at_0_70", 0.0)
+            click.echo(
+                f"    {model_name:<15}: "
+                f"Optuna score={opt_score:.4f}  "
+                f"val_precision@0.70={val_prec:.4f}"
+            )
+
+        saved_models = trainer.save_artifacts(artifacts, models_dir)
+        click.echo(f"\n  Models saved to: {models_dir}/")
+        for name, path in saved_models.items():
+            click.echo(f"    {path.name:<40}  {path.stat().st_size/1024:>6.1f} KB")
+
+        # Rename spy_magnitude_bucket -> magnitude_bucket for the evaluator
+        eval_df = test_df.rename(columns={"spy_magnitude_bucket": "magnitude_bucket"})
+
+        evaluator = SustainedMovementEvaluator(
+            thresholds=threshold_list,
+            target_col="spy_target",
+            magnitude_buckets=list(SPY_MAGNITUDE_BUCKETS),
+        )
+        eval_results = evaluator.evaluate(artifacts, eval_df)
+
+        click.echo(
+            f"\n  {'Model':<18}  {'Threshold':>10}  {'Signals':>8}  "
+            f"{'Precision':>10}  {'Recall':>8}  {'F1':>6}"
+        )
+        click.echo("  " + "-" * 68)
+        for model_name, mdata in eval_results["models"].items():
+            for t, r in sorted(mdata["threshold_results"].items()):
+                click.echo(
+                    f"  {model_name:<18}  {t:>10.0%}  "
+                    f"{r['n_signals']:>8}  "
+                    f"{r['precision']:>10.3f}  "
+                    f"{r['recall']:>8.3f}  "
+                    f"{r['f1']:>6.3f}"
+                )
+
+        click.echo("\n  Precision by SPY magnitude bucket (threshold=70%):")
+        click.echo(f"  {'Bucket':<14}  {'Signals':>8}  {'TP':>6}  {'Prec':>8}")
+        click.echo("  " + "-" * 42)
+        for model_name, mdata in eval_results["models"].items():
+            click.echo(f"\n  [{model_name}]")
+            # precision_by_magnitude is model-level, structure:
+            # {"by_threshold": {t: {bucket: {n_signals, n_tp, precision}}}, ...}
+            mag_by_thresh = mdata.get("precision_by_magnitude", {}).get(
+                "by_threshold", {}
+            )
+            # threshold key is float 0.7 in memory
+            mag_data = mag_by_thresh.get(0.70, mag_by_thresh.get(0.7, {}))
+            if not mag_data:
+                click.echo("    (no magnitude data at 70%)")
+                continue
+            for bucket in SPY_MAGNITUDE_BUCKETS:
+                bd    = mag_data.get(bucket, {})
+                n_sig = bd.get("n_signals", 0)
+                n_tp  = bd.get("n_tp", 0)
+                prec  = bd.get("precision", 0.0)
+                click.echo(
+                    f"    {bucket:<14}: {n_sig:>6}  {n_tp:>5}  {prec:>7.1%}"
+                )
+
+        eval_path = out_dir / "spy_model_eval.json"
+        with open(eval_path, "w") as fh:
+            _json.dump(eval_results, fh, indent=2, default=str)
+        click.echo(f"\n  Evaluation saved: {eval_path}")
+
+        stats_path = out_dir / "spy_label_stats.json"
+        with open(stats_path, "w") as fh:
+            _json.dump(
+                {
+                    **stats,
+                    "n_per_minute_rows": len(spy_df),
+                    "n_train_rows": len(train_df),
+                    "n_test_rows": len(test_df),
+                    "n_feature_cols": len(feature_cols),
+                    "feature_cols": feature_cols,
+                },
+                fh,
+                indent=2,
+                default=str,
+            )
+
+        click.echo(f"\n{'='*70}")
+        click.echo("  RESULTS SUMMARY -- SPY Movement Model (Step 59)")
+        click.echo(f"{'='*70}")
+        click.echo("  Reference (sustained-movement @ 70%): 33.7% precision")
+        click.echo(f"  SPY label: +{min_move_pct}% in {lookforward_minutes}m, "
+                   f"sustained {sustain_minutes}m")
+        click.echo(f"  Training rows:   {len(train_df):,} unique SPY minutes")
+        click.echo(f"  Test rows:       {len(test_df):,} unique SPY minutes")
+        click.echo(f"  Positive rate:   {spy_df['spy_target'].mean():.2%}")
+        click.echo()
+        click.echo(f"  {'Model':<18}  {'70% Thresh':>12}  {'Signals':>8}  {'Precision':>10}")
+        click.echo("  " + "-" * 55)
+        for model_name, mdata in eval_results["models"].items():
+            r70 = mdata["threshold_results"].get(0.70, {})
+            click.echo(
+                f"  {model_name:<18}  {'70%':>12}  "
+                f"{r70.get('n_signals', 0):>8}  "
+                f"{r70.get('precision', 0.0):>9.1%}"
+            )
+        click.echo(f"{'='*70}")
+        click.echo(f"\n  Output dir: {out_dir}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# test-consolidation-filter
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("test-consolidation-filter")
+@click.option(
+    "--model",
+    required=True,
+    help="Path to trained model pickle (e.g. reports/spy_movement_model/models/xgboost.pkl).",
+)
+@click.option(
+    "--model-type",
+    type=click.Choice(["spy", "option"]),
+    required=True,
+    help="'spy' uses SPYMovementLabeler + per-minute dedup; 'option' uses SustainedMovementLabeler.",
+)
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Directory containing *_features.csv files. Defaults to config value.",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Earliest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Latest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--threshold",
+    default=0.70,
+    type=float,
+    show_default=True,
+    help="Probability threshold for model predictions.",
+)
+@click.option(
+    "--output",
+    default=None,
+    help="Output directory for results JSON. Defaults to reports/consolidation_filter_test.",
+)
+def test_consolidation_filter(
+    model,
+    model_type,
+    config_dir,
+    features_dir,
+    start_date,
+    end_date,
+    threshold,
+    output,
+):
+    """Discover optimal consolidation parameters and test as post-filter.
+
+    Workflow:
+
+    \b
+    1. Load feature CSVs and apply appropriate labeler.
+    2. Chronological 70/30 train/test split.
+    3. Run ConsolidationAnalyzer on TRAINING data (no test leakage).
+    4. Load model artifact; predict on test data.
+    5. Apply ConsolidationFilter with optimal parameters.
+    6. Compare precision / signal count before vs after filter.
+
+    \b
+    Model types:
+      spy    -- SPYMovementLabeler labels, per-minute dedup, spy_high/low range
+      option -- SustainedMovementLabeler labels, per-contract range (high/low)
+
+    \b
+    Examples:
+        python -m src.cli ml test-consolidation-filter \\
+            --model reports/spy_movement_model/models/xgboost.pkl \\
+            --model-type spy \\
+            --start-date 2025-03-03 --end-date 2026-02-19
+
+        python -m src.cli ml test-consolidation-filter \\
+            --model reports/sustained_with_directional/models/xgboost.pkl \\
+            --model-type option \\
+            --start-date 2025-03-03 --end-date 2026-02-19
+    """
+    import json as _json
+    import pickle as _pickle
+    from pathlib import Path as _Path
+
+    import numpy as _np
+    import pandas as _pd
+
+    from src.analysis.consolidation_analyzer import ConsolidationAnalyzer
+    from src.ml.consolidation_filter import ConsolidationFilter
+    from src.ml.train_xgboost import load_features, _NON_FEATURE_COLS
+    from src.processing.spy_movement_labeler import SPYMovementLabeler
+    from src.processing.sustained_movement_labeler import SustainedMovementLabeler
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output) if output else _Path("reports/consolidation_filter_test")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        click.echo("\n" + "=" * 72)
+        click.echo("  CONSOLIDATION FILTER TEST -- STEP 60")
+        click.echo("=" * 72)
+        click.echo(f"  Model:           {model}")
+        click.echo(f"  Model type:      {model_type}")
+        click.echo(f"  Features dir:    {feat_dir}")
+        click.echo(f"  Date range:      {start_date or 'all'} -> {end_date or 'all'}")
+        click.echo(f"  Pred threshold:  {threshold:.0%}")
+        click.echo(f"  Output dir:      {out_dir}")
+        click.echo("=" * 72)
+
+        # ── Step 1: Load feature CSVs ──────────────────────────────────
+        click.echo("\n[1/5] Loading feature CSVs...")
+        df = load_features(feat_dir, start_date, end_date)
+        if df.empty:
+            click.echo("Error: no feature data found.", err=True)
+            sys.exit(1)
+        click.echo(f"  Loaded {len(df):,} rows across {df['date'].nunique()} dates")
+
+        # ── Step 2: Apply labeler ──────────────────────────────────────
+        click.echo(f"\n[2/5] Applying {'SPY' if model_type == 'spy' else 'Sustained'} labeler...")
+
+        if model_type == "spy":
+            spy_labeler = SPYMovementLabeler(
+                lookforward_minutes=20, min_move_pct=0.2, sustained_minutes=5
+            )
+            df = spy_labeler.label(df)
+            target_col = "spy_target"
+
+            # Deduplicate to per-minute (keep OHLC for consolidation analysis)
+            _SPY_LABEL_COLS = {
+                "spy_target", "spy_gain_at_conf",
+                "spy_max_gain_window", "spy_magnitude_bucket",
+            }
+            keep_cols = [
+                c for c in df.columns
+                if c.startswith("spy_") or c in {
+                    "date", "minutes_since_open", "hour_et", "minute_et",
+                    "minute_of_day", "pct_day_elapsed", "is_morning",
+                    "is_last_hour", "day_of_week",
+                }
+            ]
+            df = (
+                df[keep_cols]
+                .drop_duplicates(subset=["date", "minutes_since_open"])
+                .sort_values(["date", "minutes_since_open"])
+                .reset_index(drop=True)
+            )
+            click.echo(f"  After dedup: {len(df):,} per-minute rows")
+            click.echo(
+                f"  Positive rate: {df[target_col].mean():.2%} "
+                f"({int(df[target_col].sum())} positives)"
+            )
+
+        else:  # option
+            opt_labeler_cfg = {
+                "sustained_movement": {
+                    "confirmation_minutes": 15,
+                    "sustain_minutes": 5,
+                }
+            }
+            opt_labeler = SustainedMovementLabeler(opt_labeler_cfg)
+            df = opt_labeler.label(df)
+            target_col = "target_sustained"
+            click.echo(
+                f"  Positive rate: {df[target_col].mean():.2%} "
+                f"({int(df[target_col].sum())} positives)"
+            )
+
+        # ── Step 3: Chronological 70/30 split ─────────────────────────
+        click.echo("\n[3/5] Splitting data (70% train / 30% test, chronological)...")
+        n_total   = len(df)
+        split_idx = int(n_total * 0.70)
+        train_df  = df.iloc[:split_idx].reset_index(drop=True)
+        test_df   = df.iloc[split_idx:].reset_index(drop=True)
+        click.echo(
+            f"  Train: {len(train_df):,} rows | "
+            f"{int(train_df[target_col].sum())} positives"
+        )
+        click.echo(
+            f"  Test:  {len(test_df):,} rows | "
+            f"{int(test_df[target_col].sum())} positives"
+        )
+
+        # ── Step 4: Discover optimal parameters (training set only) ───
+        click.echo("\n[4/5] Running ConsolidationAnalyzer on training data...")
+        analyzer = ConsolidationAnalyzer(min_samples=50)
+
+        if model_type == "spy":
+            analysis = analyzer.analyze_spy_consolidation(train_df)
+        else:
+            analysis = analyzer.analyze_option_consolidation(train_df)
+
+        optimal = analysis["optimal"]
+        if not optimal:
+            click.echo("  ERROR: no valid parameter combinations found.", err=True)
+            sys.exit(1)
+
+        opt_window    = int(optimal["window"])
+        opt_threshold = float(optimal["threshold"])
+        click.echo(
+            f"\n  Optimal parameters: window={opt_window}m, "
+            f"threshold={opt_threshold:.2f}%"
+        )
+        click.echo(
+            f"  Training precision at optimal: {optimal['precision']:.1%} "
+            f"(baseline {analysis['baseline_precision']:.1%}, "
+            f"lift {optimal['lift']:.2f}x)"
+        )
+
+        # ── Step 5: Load model, predict, filter, compare ──────────────
+        click.echo("\n[5/5] Loading model, predicting, and applying filter...")
+
+        model_path = _Path(model)
+        if not model_path.exists():
+            click.echo(f"  ERROR: model file not found: {model_path}", err=True)
+            sys.exit(1)
+
+        with open(model_path, "rb") as fh:
+            artifact = _pickle.load(fh)
+
+        clf         = artifact["model"]
+        feature_cols = artifact.get("feature_cols") or []
+        click.echo(
+            f"  Model: {artifact.get('model_type', 'unknown')}  "
+            f"|  {len(feature_cols)} features"
+        )
+
+        # Build X_test — only use feature columns that exist in test_df
+        available = [c for c in feature_cols if c in test_df.columns]
+        if len(available) < len(feature_cols):
+            missing_fc = set(feature_cols) - set(available)
+            click.echo(
+                f"  WARNING: {len(missing_fc)} model feature(s) missing from test_df "
+                f"— filling with 0.0",
+                err=True,
+            )
+        X_test = (
+            test_df[available]
+            .reindex(columns=feature_cols, fill_value=0.0)
+            .fillna(0.0)
+            .values.astype(_np.float32)
+        )
+
+        probas = clf.predict_proba(X_test)[:, 1]
+        preds  = (probas >= threshold).astype(bool)
+        y_true = test_df[target_col].values.astype(_np.int8)
+
+        # Before-filter precision
+        n_sig_before = int(preds.sum())
+        tp_before     = int(((preds == 1) & (y_true == 1)).sum())
+        prec_before   = tp_before / max(n_sig_before, 1)
+
+        # Apply consolidation filter
+        cf = ConsolidationFilter()
+        if model_type == "spy":
+            filtered_preds = cf.apply_spy_filter(
+                preds, test_df, window=opt_window, threshold=opt_threshold
+            )
+        else:
+            filtered_preds = cf.apply_option_filter(
+                preds, test_df, window=opt_window, threshold=opt_threshold
+            )
+
+        # After-filter precision
+        n_sig_after = int(filtered_preds.sum())
+        tp_after     = int(((filtered_preds == 1) & (y_true == 1)).sum())
+        prec_after   = tp_after / max(n_sig_after, 1)
+
+        delta_prec    = prec_after - prec_before
+        pct_signals   = n_sig_after / max(n_sig_before, 1) * 100
+
+        # ── Save and print results ─────────────────────────────────────
+        results = {
+            "model":            str(model_path),
+            "model_type":       model_type,
+            "threshold":        threshold,
+            "optimal_window":   opt_window,
+            "optimal_threshold": opt_threshold,
+            "training_precision_at_optimal": float(optimal["precision"]),
+            "baseline_precision": float(analysis["baseline_precision"]),
+            "before_filter": {
+                "n_signals":  n_sig_before,
+                "true_positives": tp_before,
+                "precision":  prec_before,
+            },
+            "after_filter": {
+                "n_signals":  n_sig_after,
+                "true_positives": tp_after,
+                "precision":  prec_after,
+            },
+            "delta_precision": delta_prec,
+            "signal_retention_pct": pct_signals,
+            "consolidation_analysis": analysis["results"],
+        }
+
+        out_json = out_dir / "consolidation_filter_results.json"
+        with open(out_json, "w") as fh:
+            _json.dump(results, fh, indent=2, default=str)
+
+        click.echo(f"\n{'='*72}")
+        click.echo("  RESULTS SUMMARY")
+        click.echo(f"{'='*72}")
+        click.echo(f"  Model type:            {model_type}")
+        click.echo(f"  Optimal parameters:    window={opt_window}m, threshold={opt_threshold:.2f}%")
+        click.echo(f"  Prediction threshold:  {threshold:.0%}")
+        click.echo()
+        click.echo(f"  {'':30}  {'Signals':>8}  {'TPs':>6}  {'Precision':>10}")
+        click.echo("  " + "-" * 58)
+        click.echo(
+            f"  {'BEFORE filter':<30}  {n_sig_before:>8,}  {tp_before:>6}  {prec_before:>9.1%}"
+        )
+        click.echo(
+            f"  {'AFTER filter':<30}  {n_sig_after:>8,}  {tp_after:>6}  {prec_after:>9.1%}"
+        )
+        click.echo()
+        click.echo(f"  Precision change:      {delta_prec:>+.1%}")
+        click.echo(f"  Signal retention:      {pct_signals:.1f}%")
+        click.echo(f"  Training lift:         {optimal['lift']:.2f}x")
+        click.echo(f"{'='*72}")
+        click.echo(f"\n  Results saved: {out_json}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# threshold-sweep
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("threshold-sweep")
+@click.option(
+    "--model",
+    required=True,
+    help="Path to trained model pickle (artifact with model, feature_cols, target_col).",
+)
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Directory containing *_features.csv files. Defaults to config value.",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Earliest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Latest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--min-threshold",
+    default=0.70,
+    type=float,
+    show_default=True,
+    help="Lowest threshold to test.",
+)
+@click.option(
+    "--max-threshold",
+    default=0.95,
+    type=float,
+    show_default=True,
+    help="Highest threshold to test.",
+)
+@click.option(
+    "--step",
+    default=0.05,
+    type=float,
+    show_default=True,
+    help="Step size between thresholds.",
+)
+@click.option(
+    "--output",
+    default=None,
+    help="Output directory. Defaults to reports/threshold_sweep.",
+)
+def threshold_sweep(
+    model,
+    config_dir,
+    features_dir,
+    start_date,
+    end_date,
+    min_threshold,
+    max_threshold,
+    step,
+    output,
+):
+    """Test a model at multiple confidence thresholds to find the precision sweet spot.
+
+    Applies SustainedMovementLabeler, does 70/30 chronological split, then
+    sweeps thresholds from min to max looking for thresholds that achieve
+    >= 50% precision with 10-50 signals per day.
+
+    \b
+    For split CALL/PUT models, automatically filters the test set to the
+    appropriate contract type (option_type stored in the artifact).
+
+    \b
+    Examples:
+        python -m src.cli ml threshold-sweep \\
+            --model reports/baseline_split_models/models/xgboost_call.pkl \\
+            --start-date 2025-03-03 --end-date 2026-02-19
+
+        python -m src.cli ml threshold-sweep \\
+            --model reports/baseline_split_models/models/xgboost_put.pkl \\
+            --start-date 2025-03-03 --end-date 2026-02-19
+    """
+    import json as _json
+    import pickle as _pickle
+    from pathlib import Path as _Path
+
+    import numpy as _np
+    import pandas as _pd
+
+    from src.ml.sustained_movement_evaluator import SustainedMovementEvaluator
+    from src.ml.train_xgboost import load_features
+    from src.processing.sustained_movement_labeler import (
+        SustainedMovementLabeler,
+        MAGNITUDE_BUCKETS,
+    )
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output) if output else _Path("reports/threshold_sweep")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        model_path = _Path(model)
+        if not model_path.exists():
+            click.echo(f"Error: model not found: {model_path}", err=True)
+            sys.exit(1)
+
+        # Build threshold list
+        thresholds = []
+        t = min_threshold
+        while t <= max_threshold + 1e-9:
+            thresholds.append(round(t, 4))
+            t += step
+
+        click.echo("\n" + "=" * 72)
+        click.echo("  THRESHOLD SWEEP -- STEP 61")
+        click.echo("=" * 72)
+        click.echo(f"  Model:           {model_path}")
+        click.echo(f"  Features dir:    {feat_dir}")
+        click.echo(f"  Date range:      {start_date or 'all'} -> {end_date or 'all'}")
+        click.echo(
+            f"  Thresholds:      {', '.join(f'{t:.2f}' for t in thresholds)}"
+        )
+        click.echo(f"  Output dir:      {out_dir}")
+        click.echo("=" * 72)
+
+        # ── Step 1: Load artifact (pickle or joblib) ───────────────────
+        click.echo("\n[1/4] Loading model artifact...")
+        try:
+            with open(model_path, "rb") as fh:
+                artifact = _pickle.load(fh)
+        except Exception:
+            import joblib as _joblib
+            artifact = _joblib.load(model_path)
+
+        model_name  = artifact.get("model_name") or artifact.get("model_type", "model")
+        option_type = artifact.get("option_type", "mixed")
+        target_col  = artifact.get("target_col", "target_sustained")
+        click.echo(
+            f"  Model: {model_name}  |  option_type={option_type}  "
+            f"|  target={target_col}  |  {len(artifact.get('feature_cols', []))} features"
+        )
+
+        # ── Step 2: Load features + label ──────────────────────────────
+        click.echo("\n[2/4] Loading features and applying SustainedMovementLabeler...")
+        df = load_features(feat_dir, start_date, end_date)
+        if df.empty:
+            click.echo("Error: no feature data found.", err=True)
+            sys.exit(1)
+        click.echo(f"  Loaded {len(df):,} rows across {df['date'].nunique()} dates")
+
+        labeler_cfg = {
+            "sustained_movement": {
+                "confirmation_minutes": 15,
+                "sustain_minutes":      5,
+            }
+        }
+        labeler = SustainedMovementLabeler(labeler_cfg)
+        df = labeler.label(df)
+        click.echo(
+            f"  Positive rate: {df[target_col].mean():.2%} "
+            f"({int(df[target_col].sum())} positives)"
+        )
+
+        # ── Step 3: Chronological 70/30 split + optional type filter ───
+        click.echo("\n[3/4] Splitting data...")
+        n_total   = len(df)
+        split_idx = int(n_total * 0.70)
+        test_df   = df.iloc[split_idx:].reset_index(drop=True)
+
+        # For split CALL/PUT models, filter test set to matching type
+        if option_type == "call":
+            test_df = test_df[test_df["contract_type"] == 1].reset_index(drop=True)
+            click.echo(f"  Filtered to CALL contracts: {len(test_df):,} rows")
+        elif option_type == "put":
+            test_df = test_df[test_df["contract_type"] == 0].reset_index(drop=True)
+            click.echo(f"  Filtered to PUT contracts: {len(test_df):,} rows")
+        else:
+            click.echo(f"  Test set (all contracts): {len(test_df):,} rows")
+
+        click.echo(
+            f"  Test positives: {int(test_df[target_col].sum())} "
+            f"({test_df[target_col].mean():.2%})"
+        )
+
+        if int(test_df[target_col].sum()) < 10:
+            click.echo(
+                "\n  WARNING: very few positive labels in test set. "
+                "Results may be unreliable.",
+                err=True,
+            )
+
+        # ── Step 4: Threshold sweep ────────────────────────────────────
+        click.echo("\n[4/4] Running threshold sweep...")
+
+        evaluator = SustainedMovementEvaluator(
+            thresholds=thresholds,
+            target_col=target_col,
+            magnitude_buckets=list(MAGNITUDE_BUCKETS),
+        )
+        sweep_results = evaluator.comprehensive_threshold_sweep(
+            artifact=artifact,
+            test_df=test_df,
+            thresholds=thresholds,
+        )
+
+        # Save results
+        stem = model_path.stem  # e.g. "xgboost_call"
+        out_json = out_dir / f"{stem}_threshold_sweep.json"
+        with open(out_json, "w") as fh:
+            _json.dump(sweep_results, fh, indent=2, default=str)
+        click.echo(f"\n  Results saved: {out_json}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# leakage-audit
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("leakage-audit")
+@click.option(
+    "--model-path", "model_path_str",
+    default="models/xgboost_v2.pkl",
+    show_default=True,
+    help="Model artifact to audit (dict with 'model' and 'feature_cols' keys).",
+)
+@click.option(
+    "--compare-path", "compare_path_str",
+    default=None,
+    help="Optional clean model for comparison (e.g. models/xgboost_v3_clean.pkl).",
+)
+@click.option(
+    "--features-dir", default=None,
+    help="Feature CSV directory (overrides config).",
+)
+@click.option(
+    "--start-date", default="2025-03-03", show_default=True,
+    help="Feature date range start.",
+)
+@click.option(
+    "--end-date", default="2026-02-19", show_default=True,
+    help="Feature date range end.",
+)
+@click.option(
+    "--output", default="reports/leakage_audit", show_default=True,
+    help="Output directory for the audit JSON report.",
+)
+@click.option(
+    "--config-dir", default="config", show_default=True,
+    help="Directory containing YAML config files.",
+)
+def leakage_audit(
+    model_path_str, compare_path_str, features_dir,
+    start_date, end_date, output, config_dir,
+):
+    """Comprehensive data leakage audit for a model artifact -- Step 62.
+
+    \b
+    Runs 8 leakage detection tests:
+      1. Random data test (strongest indicator)
+      2. Source code audit (ml_feature_engineer.py)
+      3. Known lookahead features check
+      4. Target columns not in feature set
+      5. Temporal ordering validation
+      6. Train / test contamination detection
+      7. 120-minute correlation analysis (new)
+      8. Feature importance red-flag analysis (new)
+
+    \b
+    Also reports:
+      - Precision at multiple thresholds on 30% holdout
+      - Comparison model precision (if --compare-path provided)
+      - Fresh 2026 performance (dates >= 2026-01-01)
+      - Overall verdict: CLEAN or LEAKED
+
+    \b
+    Examples:
+        python -m src.cli ml leakage-audit \\
+            --model-path models/xgboost_v2.pkl \\
+            --compare-path models/xgboost_v3_clean.pkl
+
+        python -m src.cli ml leakage-audit \\
+            --model-path models/xgboost_v2.pkl \\
+            --output reports/leakage_audit/v2_audit
+    """
+    import json as _json
+    import pickle as _pickle
+    from pathlib import Path as _Path
+
+    import numpy as _np
+
+    from src.ml.leakage_detector import LeakageDetector
+    from src.ml.train_xgboost import load_features
+    from src.processing.sustained_movement_labeler import SustainedMovementLabeler
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # ── Banner ────────────────────────────────────────────────────────
+        click.echo("\n" + "=" * 72)
+        click.echo("  LEAKAGE AUDIT -- STEP 62")
+        click.echo("=" * 72)
+        click.echo(f"  Audit model:     {model_path_str}")
+        if compare_path_str:
+            click.echo(f"  Compare model:   {compare_path_str}")
+        click.echo(f"  Features dir:    {feat_dir}")
+        click.echo(f"  Date range:      {start_date} -> {end_date}")
+        click.echo(f"  Output dir:      {out_dir}")
+        click.echo("=" * 72)
+
+        # ── Step 1: Load primary artifact ─────────────────────────────────
+        click.echo("\n[1/7] Loading model artifact...")
+        model_path = _Path(model_path_str)
+        if not model_path.exists():
+            click.echo(f"Error: model not found: {model_path}", err=True)
+            sys.exit(1)
+
+        try:
+            with open(model_path, "rb") as fh:
+                artifact = _pickle.load(fh)
+        except Exception:
+            import joblib as _joblib
+            artifact = _joblib.load(model_path)
+
+        model = artifact["model"]
+        feature_cols = artifact["feature_cols"]
+        model_name = artifact.get("model_name") or model_path.stem
+        click.echo(
+            f"  Loaded: {model_name}  |  {len(feature_cols)} features  "
+            f"|  saved: {artifact.get('saved_at', 'unknown')}"
+        )
+
+        # ── Step 2: Load features ─────────────────────────────────────────
+        click.echo("\n[2/7] Loading feature data...")
+        df = load_features(feat_dir, start_date, end_date)
+        if df.empty:
+            click.echo("Error: no feature data found.", err=True)
+            sys.exit(1)
+        click.echo(f"  Loaded {len(df):,} rows across {df['date'].nunique()} dates")
+
+        labeler_cfg = {
+            "sustained_movement": {
+                "confirmation_minutes": 15,
+                "sustain_minutes": 5,
+            }
+        }
+        labeler = SustainedMovementLabeler(labeler_cfg)
+        df = labeler.label(df)
+        click.echo(
+            f"  Positive rate: {df['target_sustained'].mean():.2%} "
+            f"({int(df['target_sustained'].sum())} positives)"
+        )
+
+        # ── Step 3: Train / test split ────────────────────────────────────
+        click.echo("\n[3/7] Splitting data (70% train / 30% test)...")
+        n_total = len(df)
+        split_idx = int(n_total * 0.70)
+        train_df = df.iloc[:split_idx].reset_index(drop=True)
+        test_df = df.iloc[split_idx:].reset_index(drop=True)
+
+        train_dates = sorted(train_df["date"].astype(str).unique().tolist())
+        test_dates = sorted(test_df["date"].astype(str).unique().tolist())
+        click.echo(
+            f"  Train: {len(train_df):,} rows  ({train_dates[0]} -> {train_dates[-1]})"
+        )
+        click.echo(
+            f"  Test : {len(test_df):,} rows  ({test_dates[0]} -> {test_dates[-1]})"
+        )
+
+        fresh_df = test_df[
+            test_df["date"].astype(str) >= "2026-01-01"
+        ].reset_index(drop=True)
+        click.echo(f"  Fresh 2026 subset: {len(fresh_df):,} rows")
+
+        # ── Step 4: Run all 8 leakage tests ──────────────────────────────
+        click.echo("\n[4/7] Running leakage detection tests...")
+        detector = LeakageDetector()
+
+        # Test 1: Random data
+        click.echo("  Test 1/8: Random data test...")
+        t1 = detector.test_on_random_data(model, feature_cols)
+        v1 = "PASS" if not t1.get("leakage_detected") else "FAIL"
+        click.echo(
+            f"    -> {v1}  |  {t1.get('high_confidence_count', 0)} high-conf signals "
+            f"on {t1.get('n_samples', 1000)} random rows  "
+            f"|  avg_p={t1.get('avg_confidence', 0):.3f}  "
+            f"max_p={t1.get('max_confidence', 0):.3f}"
+        )
+
+        # Test 2: Source code audit
+        click.echo("  Test 2/8: Source code audit...")
+        t2 = detector.audit_feature_definitions()
+        v2_verdict = "PASS" if not t2.get("leakage_likely") else "FAIL"
+        click.echo(
+            f"    -> {v2_verdict}  |  {t2.get('pattern_count', 0)} suspicious pattern(s)"
+        )
+        for p in t2.get("suspicious_patterns", []):
+            click.echo(f"       [{p.get('severity', '?')}] {p.get('pattern')}")
+
+        # Test 3: Known lookahead features
+        click.echo("  Test 3/8: Known lookahead features check...")
+        t3 = detector.check_known_lookahead_features(feature_cols)
+        v3 = "PASS" if not t3.get("leakage_detected") else "FAIL"
+        click.echo(
+            f"    -> {v3}  |  checked {t3.get('features_checked', 0)} features"
+        )
+        for item in t3.get("lookahead_features", []):
+            click.echo(f"       DETECTED: '{item['feature']}'")
+
+        # Test 4: Target in features
+        click.echo("  Test 4/8: Target columns not in feature set...")
+        t4 = detector.verify_target_not_in_features(feature_cols)
+        v4 = "PASS" if not t4.get("leakage_detected") else "FAIL"
+        click.echo(
+            f"    -> {v4}  |  contaminated: {t4.get('contaminated_cols', [])}"
+        )
+
+        # Test 5: Temporal ordering
+        click.echo("  Test 5/8: Temporal ordering...")
+        t5 = detector.verify_temporal_ordering(df)
+        v5 = "PASS" if t5.get("ordering_valid") else "WARN"
+        click.echo(
+            f"    -> {v5}  |  {t5.get('violations', 0)} violation(s) "
+            f"in {t5.get('total_rows', 0):,} rows"
+        )
+
+        # Test 6: Train/test contamination
+        click.echo("  Test 6/8: Train/test contamination...")
+        t6 = detector.detect_train_test_contamination(train_dates, test_dates)
+        v6 = "PASS" if not t6.get("contamination_detected") else "FAIL"
+        click.echo(
+            f"    -> {v6}  |  {t6.get('overlap_count', 0)} overlapping dates  "
+            f"|  gap={t6.get('gap_days', '?')} days"
+        )
+
+        # Test 7: Correlation analysis (new)
+        click.echo("  Test 7/8: 120-minute correlation analysis...")
+        t7 = detector.check_120min_specific_leaks(df, feature_cols)
+        v7 = "PASS" if not t7.get("leakage_suspected") else "WARN"
+        click.echo(
+            f"    -> {v7}  |  outcome col: {t7.get('outcome_column_used', 'none')}  "
+            f"|  {len(t7.get('suspicious_by_name', []))} name pattern(s)  "
+            f"|  {len(t7.get('suspicious_by_correlation', []))} suspicious corr(s)"
+        )
+        for item in t7.get("suspicious_by_name", []):
+            click.echo(f"       NAME FLAG: '{item['feature']}'")
+        top_corr = t7.get("correlation_table_top20", [])[:5]
+        if top_corr:
+            click.echo("       Top 5 feature correlations with outcome:")
+            sev_map = {
+                r["feature"]: r.get("severity", "OK")
+                for r in t7.get("suspicious_by_correlation", [])
+            }
+            for item in top_corr:
+                sev = sev_map.get(item["feature"], "OK")
+                marker = f" [{sev}]" if sev != "OK" else ""
+                click.echo(
+                    f"         {item['feature']:<35} {item['correlation']:+.4f}{marker}"
+                )
+
+        # Test 8: Feature importance (new)
+        click.echo("  Test 8/8: Feature importance red-flag analysis...")
+        t8 = detector.analyze_feature_importance(model, feature_cols, top_n=20)
+        v8 = "PASS" if not t8.get("leakage_suspected") else "FAIL"
+        click.echo(
+            f"    -> {v8}  |  top feature: {t8.get('top_feature', 'none')}"
+        )
+        for flag in t8.get("red_flags", []):
+            click.echo(f"       {flag}")
+
+        click.echo("\n  Top 10 features by importance:")
+        for entry in t8.get("ranked_features", [])[:10]:
+            marker = (
+                " [CRITICAL]" if "CRITICAL" in entry.get("flag", "")
+                else " [WARN]" if "WARNING" in entry.get("flag", "")
+                else ""
+            )
+            click.echo(
+                f"    {entry['rank']:2d}. {entry['feature']:<35} "
+                f"{entry['importance_pct']:>8}{marker}"
+            )
+
+        # ── Step 5: Precision at thresholds on test holdout ───────────────
+        click.echo("\n[5/7] Precision at thresholds on test holdout...")
+        audit_thresholds = [0.50, 0.60, 0.67, 0.70, 0.80, 0.85, 0.90]
+
+        def _eval_precision(eval_df, eval_model, eval_features, thresh_list):
+            missing = [f for f in eval_features if f not in eval_df.columns]
+            # Build feature matrix; fill missing columns with 0 (NaN substitute)
+            # so models with removed/leaked features can still be evaluated
+            cols = []
+            for f in eval_features:
+                if f in eval_df.columns:
+                    cols.append(eval_df[f].values)
+                else:
+                    cols.append(_np.zeros(len(eval_df), dtype=_np.float32))
+            X = _np.column_stack(cols).astype(_np.float32)
+            if missing:
+                # Only show warning; still proceed with 0-filled features
+                click.echo(
+                    f"       NOTE: {len(missing)} feature(s) not in data, "
+                    f"filled with 0: {missing}",
+                    err=True,
+                )
+            proba = eval_model.predict_proba(X)[:, 1]
+            y_true = eval_df["target_sustained"].values
+            n_days = max(eval_df["date"].nunique(), 1)
+            rows = []
+            for t in thresh_list:
+                pred = (proba >= t).astype(int)
+                signals = int(pred.sum())
+                tp = int((pred & y_true).sum())
+                prec = tp / signals if signals > 0 else 0.0
+                rows.append({
+                    "threshold": t,
+                    "signals": signals,
+                    "per_day": round(signals / n_days, 1),
+                    "precision": round(prec, 4),
+                    "tp": tp,
+                    "fp": signals - tp,
+                })
+            return rows, None
+
+        v2_rows, err = _eval_precision(
+            test_df, model, feature_cols, audit_thresholds
+        )
+        if err:
+            click.echo(
+                f"  WARNING: could not evaluate precision -- {err}", err=True
+            )
+            v2_rows = []
+        else:
+            n_days_test = test_df["date"].nunique()
+            click.echo(
+                f"  Model: {model_name}  "
+                f"[{len(test_df):,} rows, {n_days_test} days]\n"
+            )
+            click.echo(
+                f"   {'Thresh':>6}  {'Signals':>8}  {'Per Day':>7}  "
+                f"{'Precision':>9}  {'TP':>6}  {'FP':>6}"
+            )
+            click.echo("  " + "-" * 56)
+            for row in v2_rows:
+                click.echo(
+                    f"   {row['threshold']:.2f}   {row['signals']:>8,}  "
+                    f"{row['per_day']:>7.1f}  "
+                    f"{row['precision']:>9.1%}  {row['tp']:>6}  {row['fp']:>6}"
+                )
+
+        # ── Step 6: Comparison model ──────────────────────────────────────
+        compare_rows = None
+        compare_name = None
+        if compare_path_str:
+            click.echo(f"\n[6/7] Comparison model: {compare_path_str}")
+            comp_path = _Path(compare_path_str)
+            if comp_path.exists():
+                try:
+                    with open(comp_path, "rb") as fh:
+                        comp_artifact = _pickle.load(fh)
+                except Exception:
+                    import joblib as _joblib2
+                    comp_artifact = _joblib2.load(comp_path)
+
+                comp_model = comp_artifact["model"]
+                comp_features = comp_artifact["feature_cols"]
+                compare_name = comp_artifact.get("model_name") or comp_path.stem
+                click.echo(
+                    f"  Loaded: {compare_name}  |  {len(comp_features)} features"
+                )
+
+                compare_rows, comp_err = _eval_precision(
+                    test_df, comp_model, comp_features, audit_thresholds
+                )
+                if comp_err:
+                    click.echo(f"  WARNING: {comp_err}", err=True)
+                    compare_rows = None
+                else:
+                    click.echo(
+                        f"\n  {'Thresh':>6}  {'V2 Prec':>8}  "
+                        f"{'V3 Prec':>8}  {'Delta':>7}  "
+                        f"{'V2 Sigs':>8}  {'V3 Sigs':>8}"
+                    )
+                    click.echo("  " + "-" * 62)
+                    for v2r, v3r in zip(v2_rows or [], compare_rows):
+                        delta = v3r["precision"] - v2r["precision"]
+                        click.echo(
+                            f"   {v2r['threshold']:.2f}   "
+                            f"{v2r['precision']:>8.1%}  {v3r['precision']:>8.1%}  "
+                            f"{delta:>+7.1%}  "
+                            f"{v2r['signals']:>8,}  {v3r['signals']:>8,}"
+                        )
+            else:
+                click.echo(
+                    f"  WARNING: compare model not found: {comp_path}", err=True
+                )
+        else:
+            click.echo("\n[6/7] Comparison model: (not provided)")
+
+        # ── Step 7: Fresh 2026 data ───────────────────────────────────────
+        click.echo(f"\n[7/7] Fresh 2026 performance ({len(fresh_df):,} rows)...")
+        fresh_rows = None
+        if len(fresh_df) >= 10:
+            fresh_rows, fresh_err = _eval_precision(
+                fresh_df, model, feature_cols, audit_thresholds
+            )
+            if fresh_err:
+                click.echo(f"  WARNING: {fresh_err}", err=True)
+                fresh_rows = None
+            else:
+                click.echo(
+                    f"  Dates: {fresh_df['date'].min()} -> {fresh_df['date'].max()}, "
+                    f"{fresh_df['date'].nunique()} trading days\n"
+                )
+                click.echo(
+                    f"   {'Thresh':>6}  {'Signals':>8}  {'Per Day':>7}  "
+                    f"{'Precision':>9}  {'TP':>6}  {'FP':>6}"
+                )
+                click.echo("  " + "-" * 56)
+                for row in fresh_rows:
+                    click.echo(
+                        f"   {row['threshold']:.2f}   {row['signals']:>8,}  "
+                        f"{row['per_day']:>7.1f}  "
+                        f"{row['precision']:>9.1%}  {row['tp']:>6}  {row['fp']:>6}"
+                    )
+        else:
+            click.echo(
+                "  No rows (or too few) with date >= 2026-01-01 in test split."
+            )
+
+        # ── Generate full report ──────────────────────────────────────────
+        report_path = str(out_dir / f"{model_path.stem}_leakage_audit.json")
+        report = detector.generate_report(output_path=report_path)
+
+        report["precision_on_test"] = v2_rows
+        report["precision_on_fresh_2026"] = fresh_rows
+        if compare_rows is not None:
+            report["precision_comparison"] = {
+                model_name: v2_rows,
+                compare_name: compare_rows,
+            }
+
+        with open(report_path, "w") as fh:
+            _json.dump(report, fh, indent=2, default=str)
+
+        # ── Final verdict ─────────────────────────────────────────────────
+        click.echo("\n" + "=" * 72)
+        click.echo("  LEAKAGE AUDIT VERDICT")
+        click.echo("=" * 72)
+        overall = report.get("overall_verdict", "UNKNOWN")
+        safe = report.get("safe_to_proceed", False)
+        critical = report.get("critical_issues", [])
+        warnings_list = report.get("warnings", [])
+
+        click.echo(f"\n  Model:          {model_name}")
+        click.echo(f"  Features:       {len(feature_cols)} columns")
+        click.echo(f"  Overall:        {overall}")
+        click.echo(f"  Safe to use:    {'YES' if safe else 'NO'}")
+
+        if critical:
+            click.echo(f"\n  Critical issues ({len(critical)}):")
+            for issue in critical:
+                click.echo(f"    x {issue}")
+        else:
+            click.echo("\n  No critical issues detected.")
+
+        if warnings_list:
+            click.echo(f"\n  Warnings ({len(warnings_list)}):")
+            for w in warnings_list:
+                click.echo(f"    ! {w}")
+
+        click.echo("\n  Interpretation:")
+        if "opt_vol_pct_cumday" in feature_cols:
+            click.echo(
+                "    x CONFIRMED LEAKED: opt_vol_pct_cumday is present "
+                "(total-day volume denominator -- unavailable at bar time T)"
+            )
+            click.echo(
+                "    -> Use xgboost_v3_clean (65 features, leak removed) "
+                "for live trading."
+            )
+        else:
+            click.echo(
+                "    + opt_vol_pct_cumday NOT present -- primary known leak is absent."
+            )
+
+        if v2_rows:
+            best = max(v2_rows, key=lambda r: r["precision"])
+            click.echo(
+                f"    Best precision: {best['precision']:.1%} "
+                f"@ threshold={best['threshold']} "
+                f"({best['signals']:,} signals, {best['per_day']}/day)"
+            )
+
+        click.echo(f"\n  Report saved: {report_path}")
+        click.echo("=" * 72 + "\n")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)

@@ -1,0 +1,618 @@
+{
+  "overall_verdict": "LEAKAGE DETECTED",
+  "safe_to_proceed": false,
+  "critical_issues": [
+    "Lookahead feature in model: 'opt_vol_pct_cumday' \u2014 Divides running cumulative volume by total-day volume (opt_vol.sum()), which is only known after market close. At bar T this denominator includes all future bars on the day.",
+    "Train/test contamination: 1 overlapping dates, gap=0 days",
+    "Cumday name pattern in features: 'opt_vol_pct_cumday'",
+    "Cumday name pattern in features: 'pct_day_elapsed'",
+    "CRITICAL: 'opt_vol_pct_cumday' is a known lookahead feature (rank #8, 2.80% importance)"
+  ],
+  "warnings": [],
+  "test_results": {
+    "random_data_test": {
+      "leakage_detected": false,
+      "n_samples": 1000,
+      "n_features": 66,
+      "high_confidence_count": 0,
+      "medium_confidence_count": 37,
+      "low_confidence_count": 963,
+      "avg_confidence": 0.38961443305015564,
+      "max_confidence": 0.7005991339683533,
+      "percentile_95": 0.5762709379196167,
+      "high_confidence_threshold": 0.8,
+      "max_acceptable_signals": 5,
+      "verdict": "PASS",
+      "explanation": "Model generated only 0 high-confidence signal(s) on 1000 random samples (threshold \u22645). Model is uncertain on noise \u2014 consistent with no leakage."
+    },
+    "feature_audit": {
+      "suspicious_patterns": [],
+      "leakage_likely": false,
+      "pattern_count": 0
+    },
+    "known_lookahead_check": {
+      "leakage_detected": true,
+      "lookahead_features": [
+        {
+          "feature": "opt_vol_pct_cumday",
+          "reason": "Divides running cumulative volume by total-day volume (opt_vol.sum()), which is only known after market close. At bar T this denominator includes all future bars on the day."
+        }
+      ],
+      "features_checked": 66
+    },
+    "target_in_features": {
+      "leakage_detected": false,
+      "contaminated_cols": [],
+      "target_cols_checked": [
+        "max_gain_120m",
+        "max_gain_pct",
+        "min_loss_120m",
+        "target",
+        "time_to_max_min"
+      ],
+      "features_inspected": 66
+    },
+    "temporal_ordering": {
+      "ordering_valid": true,
+      "violations": 0,
+      "total_rows": 172822
+    },
+    "contamination_check": {
+      "contamination_detected": true,
+      "overlap_dates": [
+        "2025-10-29"
+      ],
+      "overlap_count": 1,
+      "gap_days": 0,
+      "train_start": "2025-03-03",
+      "train_end": "2025-10-29",
+      "test_start": "2025-10-29",
+      "test_end": "2026-02-19"
+    },
+    "correlation_leakage_check": {
+      "leakage_suspected": true,
+      "outcome_column_used": "max_gain_120m",
+      "suspicious_by_name": [
+        {
+          "feature": "opt_vol_pct_cumday",
+          "reason": "Name implies cumulative / end-of-day aggregate"
+        },
+        {
+          "feature": "pct_day_elapsed",
+          "reason": "Name implies cumulative / end-of-day aggregate"
+        }
+      ],
+      "suspicious_by_correlation": [],
+      "correlation_table_top20": [
+        {
+          "feature": "minute_of_day",
+          "correlation": -0.1396,
+          "abs_corr": 0.1396
+        },
+        {
+          "feature": "minutes_since_open",
+          "correlation": -0.1396,
+          "abs_corr": 0.1396
+        },
+        {
+          "feature": "hour_et",
+          "correlation": -0.1394,
+          "abs_corr": 0.1394
+        },
+        {
+          "feature": "pct_day_elapsed",
+          "correlation": -0.139,
+          "abs_corr": 0.139
+        },
+        {
+          "feature": "opt_bar_count",
+          "correlation": -0.1284,
+          "abs_corr": 0.1284
+        },
+        {
+          "feature": "is_last_hour",
+          "correlation": -0.1277,
+          "abs_corr": 0.1277
+        },
+        {
+          "feature": "opt_hl_range_5m",
+          "correlation": 0.1227,
+          "abs_corr": 0.1227
+        },
+        {
+          "feature": "spy_bar_count",
+          "correlation": -0.1214,
+          "abs_corr": 0.1214
+        },
+        {
+          "feature": "is_morning",
+          "correlation": 0.1016,
+          "abs_corr": 0.1016
+        },
+        {
+          "feature": "spy_vol_std_30m",
+          "correlation": 0.0859,
+          "abs_corr": 0.0859
+        },
+        {
+          "feature": "contract_type",
+          "correlation": -0.0812,
+          "abs_corr": 0.0812
+        },
+        {
+          "feature": "spy_vol_std_5m",
+          "correlation": 0.0778,
+          "abs_corr": 0.0778
+        },
+        {
+          "feature": "spy_transactions",
+          "correlation": 0.0651,
+          "abs_corr": 0.0651
+        },
+        {
+          "feature": "opt_price_change_open",
+          "correlation": -0.0624,
+          "abs_corr": 0.0624
+        },
+        {
+          "feature": "spy_hl_range_30m",
+          "correlation": 0.0622,
+          "abs_corr": 0.0622
+        },
+        {
+          "feature": "spy_hl_range_5m",
+          "correlation": 0.0557,
+          "abs_corr": 0.0557
+        },
+        {
+          "feature": "iv_change_open",
+          "correlation": 0.0497,
+          "abs_corr": 0.0497
+        },
+        {
+          "feature": "implied_volatility",
+          "correlation": 0.0451,
+          "abs_corr": 0.0451
+        },
+        {
+          "feature": "transactions_ratio",
+          "correlation": -0.04,
+          "abs_corr": 0.04
+        },
+        {
+          "feature": "opt_vol_ma5",
+          "correlation": 0.0343,
+          "abs_corr": 0.0343
+        }
+      ],
+      "high_corr_threshold": 0.4,
+      "mod_corr_threshold": 0.25
+    },
+    "feature_importance_analysis": {
+      "leakage_suspected": true,
+      "red_flags": [
+        "WARNING: 'pct_day_elapsed' has end-of-day name pattern in top 10 (rank #4, 4.81%)",
+        "CRITICAL: 'opt_vol_pct_cumday' is a known lookahead feature (rank #8, 2.80% importance)"
+      ],
+      "ranked_features": [
+        {
+          "rank": 1,
+          "feature": "minute_of_day",
+          "importance": 0.07895,
+          "importance_pct": "7.89%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 2,
+          "feature": "minutes_since_open",
+          "importance": 0.07155,
+          "importance_pct": "7.16%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 3,
+          "feature": "is_last_hour",
+          "importance": 0.06121,
+          "importance_pct": "6.12%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 4,
+          "feature": "pct_day_elapsed",
+          "importance": 0.0481,
+          "importance_pct": "4.81%",
+          "is_known_leak": false,
+          "is_cumday": true,
+          "flag": "WARNING - cumday pattern"
+        },
+        {
+          "rank": 5,
+          "feature": "contract_type",
+          "importance": 0.03419,
+          "importance_pct": "3.42%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 6,
+          "feature": "opt_hl_range_5m",
+          "importance": 0.03074,
+          "importance_pct": "3.07%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 7,
+          "feature": "spy_vol_std_30m",
+          "importance": 0.02884,
+          "importance_pct": "2.88%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 8,
+          "feature": "opt_vol_pct_cumday",
+          "importance": 0.02801,
+          "importance_pct": "2.80%",
+          "is_known_leak": true,
+          "is_cumday": true,
+          "flag": "CRITICAL - known lookahead"
+        },
+        {
+          "rank": 9,
+          "feature": "moneyness",
+          "importance": 0.0272,
+          "importance_pct": "2.72%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 10,
+          "feature": "spy_ema_21",
+          "importance": 0.02579,
+          "importance_pct": "2.58%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 11,
+          "feature": "hour_et",
+          "importance": 0.02519,
+          "importance_pct": "2.52%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 12,
+          "feature": "log_moneyness",
+          "importance": 0.02443,
+          "importance_pct": "2.44%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 13,
+          "feature": "strike",
+          "importance": 0.0234,
+          "importance_pct": "2.34%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 14,
+          "feature": "opt_price_change_open",
+          "importance": 0.02295,
+          "importance_pct": "2.29%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 15,
+          "feature": "spy_ema_9",
+          "importance": 0.02201,
+          "importance_pct": "2.20%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 16,
+          "feature": "implied_volatility",
+          "importance": 0.0215,
+          "importance_pct": "2.15%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 17,
+          "feature": "spy_low",
+          "importance": 0.01971,
+          "importance_pct": "1.97%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 18,
+          "feature": "time_to_expiry_days",
+          "importance": 0.01944,
+          "importance_pct": "1.94%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 19,
+          "feature": "spy_high",
+          "importance": 0.01927,
+          "importance_pct": "1.93%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        },
+        {
+          "rank": 20,
+          "feature": "spy_close",
+          "importance": 0.01859,
+          "importance_pct": "1.86%",
+          "is_known_leak": false,
+          "is_cumday": false,
+          "flag": "OK"
+        }
+      ],
+      "top_feature": "minute_of_day",
+      "total_features": 66,
+      "dominance_threshold": 0.15
+    }
+  },
+  "precision_on_test": [
+    {
+      "threshold": 0.5,
+      "signals": 14152,
+      "per_day": 196.6,
+      "precision": 0.3237,
+      "tp": 4581,
+      "fp": 9571
+    },
+    {
+      "threshold": 0.6,
+      "signals": 4011,
+      "per_day": 55.7,
+      "precision": 0.3421,
+      "tp": 1372,
+      "fp": 2639
+    },
+    {
+      "threshold": 0.67,
+      "signals": 1288,
+      "per_day": 17.9,
+      "precision": 0.3478,
+      "tp": 448,
+      "fp": 840
+    },
+    {
+      "threshold": 0.7,
+      "signals": 798,
+      "per_day": 11.1,
+      "precision": 0.3271,
+      "tp": 261,
+      "fp": 537
+    },
+    {
+      "threshold": 0.8,
+      "signals": 60,
+      "per_day": 0.8,
+      "precision": 0.4333,
+      "tp": 26,
+      "fp": 34
+    },
+    {
+      "threshold": 0.85,
+      "signals": 7,
+      "per_day": 0.1,
+      "precision": 0.8571,
+      "tp": 6,
+      "fp": 1
+    },
+    {
+      "threshold": 0.9,
+      "signals": 0,
+      "per_day": 0.0,
+      "precision": 0.0,
+      "tp": 0,
+      "fp": 0
+    }
+  ],
+  "precision_on_fresh_2026": [
+    {
+      "threshold": 0.5,
+      "signals": 4751,
+      "per_day": 153.3,
+      "precision": 0.3275,
+      "tp": 1556,
+      "fp": 3195
+    },
+    {
+      "threshold": 0.6,
+      "signals": 1462,
+      "per_day": 47.2,
+      "precision": 0.3379,
+      "tp": 494,
+      "fp": 968
+    },
+    {
+      "threshold": 0.67,
+      "signals": 511,
+      "per_day": 16.5,
+      "precision": 0.3933,
+      "tp": 201,
+      "fp": 310
+    },
+    {
+      "threshold": 0.7,
+      "signals": 290,
+      "per_day": 9.4,
+      "precision": 0.3897,
+      "tp": 113,
+      "fp": 177
+    },
+    {
+      "threshold": 0.8,
+      "signals": 13,
+      "per_day": 0.4,
+      "precision": 0.9231,
+      "tp": 12,
+      "fp": 1
+    },
+    {
+      "threshold": 0.85,
+      "signals": 0,
+      "per_day": 0.0,
+      "precision": 0.0,
+      "tp": 0,
+      "fp": 0
+    },
+    {
+      "threshold": 0.9,
+      "signals": 0,
+      "per_day": 0.0,
+      "precision": 0.0,
+      "tp": 0,
+      "fp": 0
+    }
+  ],
+  "precision_comparison": {
+    "xgboost_v2": [
+      {
+        "threshold": 0.5,
+        "signals": 14152,
+        "per_day": 196.6,
+        "precision": 0.3237,
+        "tp": 4581,
+        "fp": 9571
+      },
+      {
+        "threshold": 0.6,
+        "signals": 4011,
+        "per_day": 55.7,
+        "precision": 0.3421,
+        "tp": 1372,
+        "fp": 2639
+      },
+      {
+        "threshold": 0.67,
+        "signals": 1288,
+        "per_day": 17.9,
+        "precision": 0.3478,
+        "tp": 448,
+        "fp": 840
+      },
+      {
+        "threshold": 0.7,
+        "signals": 798,
+        "per_day": 11.1,
+        "precision": 0.3271,
+        "tp": 261,
+        "fp": 537
+      },
+      {
+        "threshold": 0.8,
+        "signals": 60,
+        "per_day": 0.8,
+        "precision": 0.4333,
+        "tp": 26,
+        "fp": 34
+      },
+      {
+        "threshold": 0.85,
+        "signals": 7,
+        "per_day": 0.1,
+        "precision": 0.8571,
+        "tp": 6,
+        "fp": 1
+      },
+      {
+        "threshold": 0.9,
+        "signals": 0,
+        "per_day": 0.0,
+        "precision": 0.0,
+        "tp": 0,
+        "fp": 0
+      }
+    ],
+    "xgboost_v3_clean": [
+      {
+        "threshold": 0.5,
+        "signals": 23290,
+        "per_day": 323.5,
+        "precision": 0.3362,
+        "tp": 7830,
+        "fp": 15460
+      },
+      {
+        "threshold": 0.6,
+        "signals": 4738,
+        "per_day": 65.8,
+        "precision": 0.3335,
+        "tp": 1580,
+        "fp": 3158
+      },
+      {
+        "threshold": 0.67,
+        "signals": 416,
+        "per_day": 5.8,
+        "precision": 0.4303,
+        "tp": 179,
+        "fp": 237
+      },
+      {
+        "threshold": 0.7,
+        "signals": 106,
+        "per_day": 1.5,
+        "precision": 0.5189,
+        "tp": 55,
+        "fp": 51
+      },
+      {
+        "threshold": 0.8,
+        "signals": 0,
+        "per_day": 0.0,
+        "precision": 0.0,
+        "tp": 0,
+        "fp": 0
+      },
+      {
+        "threshold": 0.85,
+        "signals": 0,
+        "per_day": 0.0,
+        "precision": 0.0,
+        "tp": 0,
+        "fp": 0
+      },
+      {
+        "threshold": 0.9,
+        "signals": 0,
+        "per_day": 0.0,
+        "precision": 0.0,
+        "tp": 0,
+        "fp": 0
+      }
+    ]
+  }
+}
