@@ -5477,3 +5477,583 @@ def data_dashboard(
         click.echo(f"Error: {exc}", err=True)
         click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# generate-magnitude-labels
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("generate-magnitude-labels")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Directory containing *_features.csv files. Defaults to config value.",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Earliest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Latest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--min-magnitude",
+    default=20.0,
+    type=float,
+    show_default=True,
+    help="Minimum absolute % move (up or down) to label as positive.",
+)
+def generate_magnitude_labels(config_dir, features_dir, start_date, end_date, min_magnitude):
+    """Preview magnitude label statistics across all feature CSVs.
+
+    Loads feature CSVs, applies MagnitudeLabeler using pre-computed
+    ``max_gain_120m`` / ``min_loss_120m`` columns, and prints a distribution
+    summary.  No new files are written; labels are computed in-memory.
+
+    \b
+    Example:
+        python -m src.cli ml generate-magnitude-labels \\
+            --start-date 2025-03-03 --end-date 2026-02-19 \\
+            --min-magnitude 20.0
+    """
+    from src.ml.train_xgboost import load_features
+    from src.processing.magnitude_labeler import MagnitudeLabeler, MAGNITUDE_BUCKETS
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+
+        click.echo("\n" + "=" * 70)
+        click.echo("  MAGNITUDE LABEL PREVIEW")
+        click.echo("=" * 70)
+        click.echo(f"  Features dir:  {feat_dir}")
+        click.echo(f"  Date range:    {start_date or 'all'} → {end_date or 'all'}")
+        click.echo(f"  Min magnitude: {min_magnitude}%  (|move| ≥ this → positive)")
+        click.echo("=" * 70)
+
+        click.echo("\n[1/2] Loading feature CSVs…")
+        df = load_features(feat_dir, start_date, end_date)
+        if df.empty:
+            click.echo(
+                f"Error: no feature data found in {feat_dir}", err=True
+            )
+            sys.exit(1)
+        n_dates = df["date"].nunique() if "date" in df.columns else "?"
+        click.echo(f"  Loaded {len(df):,} rows across {n_dates} dates")
+
+        click.echo(f"\n[2/2] Applying MagnitudeLabeler (min_magnitude={min_magnitude}%)…")
+        labeler = MagnitudeLabeler(min_magnitude_pct=min_magnitude)
+        df = labeler.label(df)
+        stats = labeler.validate(df)
+
+        click.echo(f"\n  Total rows:       {stats['n_total']:,}")
+        click.echo(
+            f"  Positive labels:  {stats['n_positive']:,}  "
+            f"({stats['positive_rate']:.2%})  [|move| ≥ {min_magnitude}%]"
+        )
+        if stats["n_positive"] > 0:
+            click.echo(
+                f"  Avg abs move:     {stats['avg_abs_magnitude']:.1f}%  "
+                f"(among positives)"
+            )
+            click.echo(
+                f"  Up moves:         {stats['n_up']:,}  "
+                f"({stats['n_up'] / stats['n_positive']:.1%} of positives)"
+            )
+            click.echo(
+                f"  Down moves:       {stats['n_down']:,}  "
+                f"({stats['n_down'] / stats['n_positive']:.1%} of positives)"
+            )
+
+        click.echo("\n  Magnitude bucket breakdown (all rows):")
+        for bucket in MAGNITUDE_BUCKETS:
+            count = stats["magnitude_breakdown"].get(bucket, 0)
+            pct = count / max(stats["n_total"], 1) * 100
+            bar = "█" * max(1, int(pct / 2))
+            click.echo(f"    {bucket:<8}: {count:>7,}  ({pct:5.1f}%)  {bar}")
+
+        click.echo(
+            f"\n  Straddle opportunity: {stats['n_positive']:,} bars where "
+            f"|move| ≥ {min_magnitude}%\n"
+            "  → Run 'ml train-magnitude-models' to train a magnitude predictor."
+        )
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# train-magnitude-models
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("train-magnitude-models")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Directory containing *_features.csv files. Defaults to config value.",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Earliest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Latest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--min-magnitude",
+    default=20.0,
+    type=float,
+    show_default=True,
+    help="Minimum absolute % move required for a positive label.",
+)
+@click.option(
+    "--n-trials",
+    default=50,
+    type=int,
+    show_default=True,
+    help="Optuna trials per model type.",
+)
+@click.option(
+    "--cv-splits",
+    default=3,
+    type=int,
+    show_default=True,
+    help="TimeSeriesSplit folds inside each Optuna trial.",
+)
+@click.option(
+    "--thresholds",
+    default="0.50,0.60,0.70,0.75,0.80,0.85,0.90",
+    show_default=True,
+    help="Comma-separated evaluation thresholds.",
+)
+@click.option(
+    "--position-size",
+    default=12500.0,
+    type=float,
+    show_default=True,
+    help="Straddle position size in USD per trade.",
+)
+@click.option(
+    "--output",
+    default=None,
+    help="Output directory for models and reports. "
+    "Defaults to reports/magnitude_experiment.",
+)
+def train_magnitude_models(
+    config_dir,
+    features_dir,
+    start_date,
+    end_date,
+    min_magnitude,
+    n_trials,
+    cv_splits,
+    thresholds,
+    position_size,
+    output,
+):
+    """Train magnitude prediction models (direction-agnostic straddle strategy).
+
+    Full pipeline:
+
+    \b
+    1. Load feature CSVs from --features-dir.
+    2. Apply MagnitudeLabeler: target = |move| >= min_magnitude% in 120 min.
+    3. Chronological 70/30 train/test split.
+    4. Train XGBoost + LightGBM + RandomForest with Optuna (n_trials each).
+    5. Evaluate at multiple thresholds with straddle P&L estimate.
+    6. Save models and JSON report.
+
+    \b
+    Straddle profit model:
+      TP (model predicts big move, move >= min_magnitude%):
+          PnL = (avg_magnitude - 5) / 100 * position_size
+          (winning side gains avg_magnitude%; losing side loses ~5% to theta)
+      FP (model predicts big move, no big move):
+          PnL = -8 / 100 * position_size
+          (both sides decay from theta, ~8% total loss)
+
+    \b
+    Example:
+        python -m src.cli ml train-magnitude-models \\
+            --start-date 2025-03-03 --end-date 2026-02-19 \\
+            --n-trials 50 --min-magnitude 20.0
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import numpy as _np
+    import pandas as _pd
+
+    from src.ml.multi_model_trainer import MultiModelTrainer
+    from src.ml.train_xgboost import load_features, _NON_FEATURE_COLS
+    from src.processing.magnitude_labeler import MagnitudeLabeler, MAGNITUDE_BUCKETS
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output) if output else _Path("reports/magnitude_experiment")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        models_dir = out_dir / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        # Parse thresholds
+        try:
+            threshold_list = [float(t.strip()) for t in thresholds.split(",")]
+        except ValueError:
+            click.echo(
+                f"Error: --thresholds must be comma-separated floats, "
+                f"got: {thresholds!r}",
+                err=True,
+            )
+            sys.exit(1)
+
+        click.echo("\n" + "=" * 72)
+        click.echo("  MAGNITUDE PREDICTION EXPERIMENT  (Step 63)")
+        click.echo("=" * 72)
+        click.echo(f"  Features dir:   {feat_dir}")
+        click.echo(f"  Date range:     {start_date or 'all'} → {end_date or 'all'}")
+        click.echo(f"  Min magnitude:  {min_magnitude}%  (|move| threshold)")
+        click.echo(f"  Optuna trials:  {n_trials} per model type")
+        click.echo(f"  CV splits:      {cv_splits}")
+        click.echo(f"  Position size:  ${position_size:,.0f} per straddle")
+        click.echo(f"  Output dir:     {out_dir}")
+        click.echo("=" * 72)
+
+        # ── Step 1: Load features ──────────────────────────────────────
+        click.echo("\n[1/5] Loading feature CSVs…")
+        df = load_features(feat_dir, start_date, end_date)
+        if df.empty:
+            click.echo(
+                f"Error: no feature data found in {feat_dir} for "
+                f"{start_date} → {end_date}",
+                err=True,
+            )
+            sys.exit(1)
+        n_dates = df["date"].nunique() if "date" in df.columns else "?"
+        click.echo(f"  Loaded {len(df):,} rows across {n_dates} dates")
+
+        # ── Step 2: Apply MagnitudeLabeler ─────────────────────────────
+        click.echo(f"\n[2/5] Applying MagnitudeLabeler (min_magnitude={min_magnitude}%)…")
+        labeler = MagnitudeLabeler(min_magnitude_pct=min_magnitude)
+        df = labeler.label(df)
+        stats = labeler.validate(df)
+
+        click.echo(f"  Total rows:      {stats['n_total']:,}")
+        click.echo(
+            f"  Positive labels: {stats['n_positive']:,}  ({stats['positive_rate']:.2%})"
+        )
+        if stats["n_positive"] > 0:
+            click.echo(f"  Avg abs move:    {stats['avg_abs_magnitude']:.1f}%  (among positives)")
+            click.echo(
+                f"  UP / DOWN:       {stats['n_up']:,} / {stats['n_down']:,}  "
+                f"({stats['n_up'] / stats['n_positive']:.1%} / "
+                f"{stats['n_down'] / stats['n_positive']:.1%})"
+            )
+        click.echo("\n  Magnitude buckets (all rows):")
+        for bucket in MAGNITUDE_BUCKETS:
+            count = stats["magnitude_breakdown"].get(bucket, 0)
+            pct = count / max(stats["n_total"], 1) * 100
+            bar = "█" * max(1, int(pct / 2))
+            click.echo(f"    {bucket:<8}: {count:>7,}  ({pct:5.1f}%)  {bar}")
+
+        if stats["n_positive"] < 50:
+            click.echo(
+                "\n  WARNING: Very few positive labels — model may not generalise.",
+                err=True,
+            )
+
+        # ── Step 3: Chronological train/test split ─────────────────────
+        click.echo("\n[3/5] Splitting data (70% train / 30% test, chronological)…")
+        n_total = len(df)
+        split_idx = int(n_total * 0.70)
+        train_df = df.iloc[:split_idx].reset_index(drop=True)
+        test_df  = df.iloc[split_idx:].reset_index(drop=True)
+
+        click.echo(
+            f"  Train: {len(train_df):,} rows  "
+            f"({int(train_df['target_magnitude'].sum())} positives)"
+        )
+        click.echo(
+            f"  Test:  {len(test_df):,} rows  "
+            f"({int(test_df['target_magnitude'].sum())} positives)"
+        )
+
+        # Determine feature columns — exclude metadata, raw prices, labels
+        _MAGNITUDE_EXTRA_COLS = {
+            "target_magnitude", "abs_max_move_pct", "move_direction", "magnitude_bucket",
+        }
+        feature_cols = sorted([
+            c for c in df.columns
+            if c not in _NON_FEATURE_COLS and c not in _MAGNITUDE_EXTRA_COLS
+        ])
+        click.echo(f"  Feature columns: {len(feature_cols)}")
+
+        # Leakage check — ensure no forward-looking columns slipped through
+        _FORBIDDEN = {
+            "max_gain_120m", "min_loss_120m", "target", "target_sustained",
+            "abs_max_move_pct", "move_direction", "magnitude_bucket",
+            "gain_pct_at_confirmation", "sustain_minutes_actual",
+        }
+        forbidden_found = [c for c in feature_cols if c in _FORBIDDEN]
+        if forbidden_found:
+            click.echo(
+                f"\n  LEAKAGE ALERT: {len(forbidden_found)} forbidden column(s) "
+                f"found in feature set: {forbidden_found}",
+                err=True,
+            )
+            sys.exit(1)
+        else:
+            click.echo("  Leakage check: OK — no forbidden columns in feature set.")
+
+        # ── Step 4: Train models ────────────────────────────────────────
+        click.echo(
+            f"\n[4/5] Training XGBoost + LightGBM + RandomForest "
+            f"({n_trials} Optuna trials each)…"
+        )
+        click.echo("  (This may take several hours with n_trials=50)")
+
+        trainer = MultiModelTrainer(n_trials=n_trials, cv_splits=cv_splits)
+        artifacts = trainer.train(
+            df=train_df,
+            target_col="target_magnitude",
+            feature_cols=feature_cols,
+        )
+
+        click.echo("\n  Training complete:")
+        for model_name, artifact in artifacts.items():
+            opt_score = artifact.get("optimization_score", 0.0)
+            val_prec  = artifact.get("val_precision_at_0_70", 0.0)
+            click.echo(
+                f"    {model_name:<15}: "
+                f"Optuna score={opt_score:.4f}  "
+                f"val_precision@0.70={val_prec:.4f}"
+            )
+
+        # Save model artifacts
+        saved_models = trainer.save_artifacts(artifacts, models_dir)
+        click.echo(f"\n  Models saved to: {models_dir}/")
+        for name, path in saved_models.items():
+            size_kb = path.stat().st_size / 1024
+            click.echo(f"    {path.name:<45}  {size_kb:>6.1f} KB")
+
+        # ── Step 5: Evaluate with straddle P&L ─────────────────────────
+        click.echo(f"\n[5/5] Evaluating on test set ({len(test_df):,} rows)…")
+
+        # Straddle P&L constants
+        _THETA_DECAY_WIN_SIDE_PCT = 5.0   # losing leg loses ~5% to theta
+        _THETA_FP_TOTAL_PCT       = 8.0   # total theta on failed straddle (~8%)
+
+        y_test = test_df["target_magnitude"].values
+        test_dates_n = test_df["date"].nunique() if "date" in test_df.columns else 1
+
+        eval_records = []
+
+        for model_name, artifact in artifacts.items():
+            model = artifact["model"]
+            feature_cols_art = artifact.get("feature_cols", feature_cols)
+
+            # Align feature columns
+            X_test_cols = []
+            for fc in feature_cols_art:
+                if fc in test_df.columns:
+                    X_test_cols.append(test_df[fc].fillna(0.0).values)
+                else:
+                    X_test_cols.append(_np.zeros(len(test_df), dtype=_np.float32))
+            X_test = _np.column_stack(X_test_cols).astype(_np.float32)
+
+            y_proba = model.predict_proba(X_test)[:, 1]
+
+            click.echo(f"\n  {'=' * 68}")
+            click.echo(f"  {model_name.upper()}")
+            click.echo(f"  {'=' * 68}")
+            click.echo(
+                f"  {'Thresh':>7}  {'Signals':>8}  {'Per Day':>7}  "
+                f"{'Prec':>7}  {'TP':>6}  {'FP':>6}  "
+                f"{'AvgMag':>8}  {'Est Mo P&L':>12}"
+            )
+            click.echo("  " + "-" * 75)
+
+            for thresh in threshold_list:
+                y_pred = (y_proba >= thresh).astype(int)
+                tp_mask = (y_pred == 1) & (y_test == 1)
+                fp_mask = (y_pred == 1) & (y_test == 0)
+                fn_mask = (y_pred == 0) & (y_test == 1)
+
+                n_tp = int(tp_mask.sum())
+                n_fp = int(fp_mask.sum())
+                n_fn = int(fn_mask.sum())
+                n_signals = n_tp + n_fp
+                precision = n_tp / n_signals if n_signals else 0.0
+                per_day   = n_signals / max(test_dates_n, 1)
+
+                # Average magnitude of true positives
+                tp_abs_moves = test_df.loc[tp_mask, "abs_max_move_pct"]
+                avg_magnitude = float(tp_abs_moves.mean()) if n_tp else 0.0
+
+                # Straddle P&L estimate
+                if n_tp > 0:
+                    straddle_win  = (avg_magnitude - _THETA_DECAY_WIN_SIDE_PCT) / 100.0 * position_size
+                else:
+                    straddle_win  = 0.0
+                straddle_loss = -_THETA_FP_TOTAL_PCT / 100.0 * position_size
+
+                # Scale to monthly (22 trading days)
+                trading_days_test = max(test_dates_n, 1)
+                monthly_tp  = n_tp / trading_days_test * 22
+                monthly_fp  = n_fp / trading_days_test * 22
+                monthly_pnl = monthly_tp * straddle_win + monthly_fp * straddle_loss
+
+                pnl_str = f"${monthly_pnl:>+10,.0f}"
+                click.echo(
+                    f"  {thresh:>7.0%}  {n_signals:>8,}  {per_day:>7.1f}  "
+                    f"{precision:>7.1%}  {n_tp:>6}  {n_fp:>6}  "
+                    f"{avg_magnitude:>7.1f}%  {pnl_str}"
+                )
+
+                eval_records.append({
+                    "model": model_name,
+                    "threshold": thresh,
+                    "n_signals": n_signals,
+                    "signals_per_day": round(per_day, 2),
+                    "precision": round(precision, 4),
+                    "n_tp": n_tp,
+                    "n_fp": n_fp,
+                    "n_fn": n_fn,
+                    "avg_magnitude_tp": round(avg_magnitude, 2),
+                    "monthly_pnl_usd": round(monthly_pnl, 2),
+                })
+
+            # Direction breakdown at primary threshold (0.70)
+            primary_thresh = 0.70
+            y_pred_primary = (y_proba >= primary_thresh).astype(int)
+            tp_primary = test_df[(y_pred_primary == 1) & (y_test == 1)]
+            if len(tp_primary) > 0:
+                up_count   = int((tp_primary["move_direction"] == "up").sum())
+                down_count = int((tp_primary["move_direction"] == "down").sum())
+                click.echo(
+                    f"\n  TP direction @ {primary_thresh:.0%}: "
+                    f"{up_count} UP  /  {down_count} DOWN"
+                    f"  ({up_count / len(tp_primary):.1%} / {down_count / len(tp_primary):.1%})"
+                )
+
+            # Precision by magnitude bucket at primary threshold
+            signals_primary = test_df[y_pred_primary == 1]
+            if len(signals_primary) > 0:
+                click.echo(f"\n  Precision by magnitude bucket @ {primary_thresh:.0%}:")
+                click.echo(
+                    f"    {'Bucket':<10}  {'Signals':>8}  {'TP':>6}  {'Precision':>10}"
+                )
+                click.echo("    " + "-" * 40)
+                for bucket in MAGNITUDE_BUCKETS:
+                    b_mask = signals_primary["magnitude_bucket"] == bucket
+                    b_count = int(b_mask.sum())
+                    if b_count == 0:
+                        continue
+                    b_tp = int((signals_primary[b_mask]["target_magnitude"] == 1).sum())
+                    b_prec = b_tp / b_count
+                    click.echo(
+                        f"    {bucket:<10}  {b_count:>8,}  {b_tp:>6}  {b_prec:>10.1%}"
+                    )
+
+        # ── Save results ───────────────────────────────────────────────
+        results = {
+            "experiment": "magnitude_prediction",
+            "step": 63,
+            "min_magnitude_pct": min_magnitude,
+            "date_range": [start_date, end_date],
+            "n_train_rows": len(train_df),
+            "n_test_rows": len(test_df),
+            "n_test_dates": test_dates_n,
+            "positive_rate_train": float(train_df["target_magnitude"].mean()),
+            "positive_rate_test": float(test_df["target_magnitude"].mean()),
+            "n_features": len(feature_cols),
+            "feature_cols": feature_cols,
+            "position_size_usd": position_size,
+            "straddle_tp_formula": "(avg_magnitude - 5) / 100 * position_size",
+            "straddle_fp_formula": "-8 / 100 * position_size",
+            "threshold_results": eval_records,
+        }
+
+        results_path = out_dir / "magnitude_results.json"
+        results_path.write_text(_json.dumps(results, indent=2))
+        click.echo(f"\n  Results saved: {results_path}")
+
+        # ── Verdict ────────────────────────────────────────────────────
+        click.echo("\n" + "=" * 72)
+        click.echo("  MAGNITUDE EXPERIMENT VERDICT")
+        click.echo("=" * 72)
+
+        # Find best precision at 0.70 threshold across all models
+        best_at_70 = max(
+            (r for r in eval_records if abs(r["threshold"] - 0.70) < 0.001),
+            key=lambda r: r["precision"],
+            default=None,
+        )
+        if best_at_70:
+            best_prec = best_at_70["precision"]
+            best_model = best_at_70["model"]
+            best_pnl   = best_at_70["monthly_pnl_usd"]
+            click.echo(
+                f"\n  Best @ 0.70:  {best_model}  →  {best_prec:.1%} precision  "
+                f"(est. monthly P&L: ${best_pnl:+,.0f})"
+            )
+            if best_prec >= 0.60:
+                click.echo(
+                    "\n  VERDICT: MAGNITUDE MODEL WORKS\n"
+                    "  Strategy: Trade straddles on high-confidence signals.\n"
+                    f"  Edge: {best_prec - 0.50:.1%} above random."
+                )
+            elif best_prec >= 0.50:
+                click.echo(
+                    "\n  VERDICT: MARGINAL IMPROVEMENT\n"
+                    "  Magnitude model is slightly better than directional.\n"
+                    "  Consider using with strict threshold (>= 0.80)."
+                )
+            else:
+                click.echo(
+                    "\n  VERDICT: NO IMPROVEMENT\n"
+                    "  Even magnitude prediction fails to beat random.\n"
+                    "  Problem may be fundamental at this timeframe."
+                )
+
+        click.echo(f"\n  Output dir:  {out_dir}")
+        click.echo("=" * 72)
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
