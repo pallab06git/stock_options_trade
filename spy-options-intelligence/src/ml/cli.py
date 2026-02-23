@@ -5350,3 +5350,130 @@ def leakage_audit(
         click.echo(f"Error: {exc}", err=True)
         click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# data-dashboard
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("data-dashboard")
+@click.option(
+    "--date", "date_str",
+    required=True,
+    help="Trading day to visualise (YYYY-MM-DD, e.g. 2025-06-25).",
+)
+@click.option(
+    "--n-contracts", default=5, show_default=True,
+    help="Number of option contracts to display (CALLs + PUTs).",
+)
+@click.option(
+    "--model-path", default=None,
+    help="Optional model artifact (.pkl) for the predictions layer.",
+)
+@click.option(
+    "--features-dir", default=None,
+    help="Feature CSV directory (overrides config).",
+)
+@click.option(
+    "--spy-raw-dir", default="data/raw/spy", show_default=True,
+    help="Directory containing raw SPY Parquet files.",
+)
+@click.option(
+    "--options-raw-dir", default="data/raw/options/minute", show_default=True,
+    help="Directory containing raw option Parquet files.",
+)
+@click.option(
+    "--output", default=None,
+    help="Output HTML path (default: reports/dashboard/{date}_dashboard.html).",
+)
+@click.option(
+    "--show-derivation", is_flag=True, default=False,
+    help="Print feature derivation console trace for the first 3 minute bars.",
+)
+@click.option(
+    "--config-dir", default="config", show_default=True,
+    help="Directory containing YAML config files.",
+)
+def data_dashboard(
+    date_str, n_contracts, model_path, features_dir,
+    spy_raw_dir, options_raw_dir, output, show_derivation, config_dir,
+):
+    """Build an interactive HTML dashboard for a single trading day.
+
+    \b
+    Dashboard rows:
+      1. SPY candlestick + volume
+      2. CALL option contracts (close price)
+      3. PUT option contracts (close price)
+      4. Feature heatmap (20 features, z-scored ±3sigma)
+      5. Model confidence + actual outcomes
+
+    \b
+    Examples:
+        python -m src.cli ml data-dashboard --date 2025-06-25
+
+        python -m src.cli ml data-dashboard \\
+            --date 2025-09-15 \\
+            --model-path models/xgboost_v3_clean.pkl \\
+            --n-contracts 6 \\
+            --show-derivation
+    """
+    from pathlib import Path as _Path
+
+    from src.analysis.data_dashboard_builder import DataDashboardBuilder
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+
+        out_html = output or f"reports/dashboard/{date_str}_dashboard.html"
+        _Path(out_html).parent.mkdir(parents=True, exist_ok=True)
+
+        click.echo("\n" + "=" * 72)
+        click.echo("  DATA PIPELINE DASHBOARD")
+        click.echo("=" * 72)
+        click.echo(f"  Date:          {date_str}")
+        click.echo(f"  Contracts:     {n_contracts}")
+        click.echo(f"  Features dir:  {feat_dir}")
+        if model_path:
+            click.echo(f"  Model:         {model_path}")
+        click.echo(f"  Output:        {out_html}")
+        click.echo("=" * 72)
+
+        builder = DataDashboardBuilder(
+            spy_raw_dir=spy_raw_dir,
+            options_raw_dir=options_raw_dir,
+            features_dir=feat_dir,
+            model_path=model_path,
+        )
+
+        data = builder.extract_sample_day(date_str, n_contracts=n_contracts)
+
+        if data["features"].empty:
+            click.echo(
+                f"\nError: no feature data found for {date_str}. "
+                "Check --features-dir and --date.",
+                err=True,
+            )
+            sys.exit(1)
+
+        builder.build_dashboard(data, output_path=out_html)
+
+        if show_derivation:
+            click.echo("\n--- Feature Derivation (first 3 bars) ---")
+            for idx in range(min(3, len(data["features"]))):
+                builder.show_feature_derivation(data["features"], minute_idx=idx)
+
+        click.echo(f"\n  Dashboard ready: {out_html}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
