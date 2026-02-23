@@ -986,6 +986,29 @@
 - Tests: 1474 passed, 42 skipped (unchanged)
 - Run: `python run_final_optimization.py > logs/final_optimization.log 2>&1 &` (est. 4–8h)
 
+## Step 68: Signal Analysis Dashboard ✅ (2026-02-23, commit b73e777)
+- Goal: Extract all historical signals from the magnitude ensemble and present a rich interactive dashboard
+- Files:
+  - `src/analysis/signal_extractor.py` (CREATE NEW)
+    - `SignalExtractor(feature_cols)` — extracts all bars where AVG(LightGBM,RF) ≥ threshold
+    - `extract_all_signals(lgbm_model, rf_model, full_df, threshold=0.97)` → pd.DataFrame
+    - Per-signal: metadata, entry conditions, model confidence, plain-English explanation, straddle P&L
+    - `_generate_explanation(info)` — moneyness/IV/momentum/time description
+    - `_simulate_straddle(info)` — TP: winner=entry*(1+move/100)+loser=entry*0.94; FP: both*0.92 (×100 shares/contract)
+    - Column mapping corrections: ticker (not option_symbol), close (not option_mid), abs_max_move_pct, time_to_max_min, opt_rsi_14, spy_return_5m, target_magnitude
+  - `src/visualization/__init__.py` (CREATE NEW) — package init
+  - `src/visualization/signal_dashboard.py` (CREATE NEW)
+    - `SignalDashboard(lgbm_model_name, rf_model_name, threshold)` — dark-theme Plotly HTML
+    - `build_dashboard(signals_df, output_path)` — writes standalone HTML
+    - 4 charts: confidence-vs-magnitude scatter, magnitude bucket bars, daily timeline, straddle return histogram
+    - KPI row: 8 cards (total signals, precision, avg confidence, avg magnitude, straddle return, total P&L, win rate, CALLs/PUTs)
+    - Sortable signal table + collapsible per-signal detail cards (top 100 by confidence)
+  - `src/ml/cli.py` — new `build-signal-dashboard` command (5-step: load→label→extract→save CSV→build HTML)
+- Production run results: 603 signals | 100% precision | 0 FP | avg confidence 97.0%
+  - Date range: 2025-03-04 → 2025-11-25 (231 trading days)
+  - Output: `reports/signal_dashboard.html` (377 KB) + `reports/signal_dashboard.csv`
+- Tests: 1516 collected (unchanged)
+
 ## Future
 - [ ] Fresh out-of-sample validation of LightGBM/RF magnitude models on 2026 live data
 - [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
@@ -995,4 +1018,4 @@
 - [ ] MLflow integration
 
 ---
-**Total tests: 1461 passing + 42 skipped (LSTM when torch absent) | Last updated: 2026-02-23**
+**Total tests: 1516 collected (1474 run) | Last updated: 2026-02-23**
