@@ -6057,3 +6057,501 @@ def train_magnitude_models(
         click.echo(f"Error: {exc}", err=True)
         click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# audit-magnitude-model
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("audit-magnitude-model")
+@click.option(
+    "--model-path",
+    required=True,
+    help="Path to magnitude model .pkl artifact (e.g. reports/magnitude_experiment/models/lightgbm.pkl).",
+)
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Directory containing *_features.csv files. Defaults to config value.",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Earliest feature date (YYYY-MM-DD). Defaults to full dataset.",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Latest feature date (YYYY-MM-DD). Defaults to full dataset.",
+)
+@click.option(
+    "--min-magnitude",
+    default=20.0,
+    type=float,
+    show_default=True,
+    help="Min absolute % move used during training (to re-derive labels).",
+)
+@click.option(
+    "--output",
+    default=None,
+    help="Output directory for audit report. Defaults to reports/leakage_audit/.",
+)
+@click.option(
+    "--random-samples",
+    default=10_000,
+    type=int,
+    show_default=True,
+    help="Number of random-noise samples for Test 1.",
+)
+def audit_magnitude_model(
+    model_path,
+    config_dir,
+    features_dir,
+    start_date,
+    end_date,
+    min_magnitude,
+    output,
+    random_samples,
+):
+    """Comprehensive leakage audit for magnitude prediction models.
+
+    Runs 9 tests:
+
+    \b
+    1. Random-data test  — fires model on pure Gaussian noise
+    2. Source-code audit — scans ml_feature_engineer.py for lookahead
+    3. Known lookahead   — checks for opt_vol_pct_cumday etc.
+    4. Target-in-features— ensures no label column in feature set
+    5. Temporal ordering — verifies DataFrame is time-sorted
+    6. Train/test contamination — zero date overlap required
+    7. 120-min correlation analysis — Pearson vs max_gain_120m
+    8. Feature importance red-flags — dominant / cumday / known-leak
+    9. Magnitude-specific checks — forbidden label cols, future-name
+       patterns, correlation with abs_max_move_pct
+
+    \b
+    Example:
+        python -m src.cli ml audit-magnitude-model \\
+            --model-path reports/magnitude_experiment/models/lightgbm.pkl \\
+            --start-date 2025-03-03 --end-date 2026-02-19
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import joblib
+    import numpy as _np
+
+    from src.ml.leakage_detector import LeakageDetector
+    from src.ml.train_xgboost import load_features, _NON_FEATURE_COLS
+    from src.processing.magnitude_labeler import MagnitudeLabeler, MAGNITUDE_BUCKETS
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output) if output else _Path("reports/leakage_audit")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        model_p = _Path(model_path)
+        model_stem = model_p.stem
+
+        log_path = out_dir / f"{model_stem}_magnitude_audit.log"
+        import sys as _sys
+
+        old_stdout = _sys.stdout
+
+        class _Tee:
+            """Write to both the original stdout and a log file simultaneously."""
+            def __init__(self, orig, f):
+                self._orig = orig   # captured BEFORE sys.stdout is replaced
+                self._f    = f
+            def write(self, msg): self._orig.write(msg); self._f.write(msg)
+            def flush(self):      self._orig.flush();    self._f.flush()
+
+        log_fh = open(log_path, "w")
+        _sys.stdout = _Tee(old_stdout, log_fh)
+
+        width = 72
+        print()
+        print("=" * width)
+        print("  MAGNITUDE MODEL LEAKAGE AUDIT  (Step 65)")
+        print("=" * width)
+        print(f"  Model:        {model_path}")
+        print(f"  Features dir: {feat_dir}")
+        print(f"  Date range:   {start_date or 'all'} → {end_date or 'all'}")
+        print(f"  Min magnitude:{min_magnitude}%")
+        print(f"  Output dir:   {out_dir}")
+        print("=" * width)
+
+        # ── Load artifact ──────────────────────────────────────────────
+        print("\n[1/7] Loading model artifact…")
+        artifact = joblib.load(model_path)
+        model_obj   = artifact["model"]
+        feature_cols = artifact.get("feature_cols", [])
+        model_type   = artifact.get("model_type", "unknown")
+        target_col   = artifact.get("target_col", "target_magnitude")
+        saved_at     = artifact.get("saved_at", "?")
+        print(
+            f"  Loaded: {model_stem}  |  {len(feature_cols)} features  "
+            f"|  type: {model_type}  |  saved: {saved_at}"
+        )
+        print(f"  Target column: {target_col}")
+
+        # ── Load features ──────────────────────────────────────────────
+        print("\n[2/7] Loading feature data…")
+        df = load_features(feat_dir, start_date, end_date)
+        if df.empty:
+            print(f"Error: no data found in {feat_dir}", file=_sys.stderr)
+            _sys.exit(1)
+        n_dates = df["date"].nunique() if "date" in df.columns else "?"
+        print(f"  Loaded {len(df):,} rows across {n_dates} dates")
+
+        # Apply MagnitudeLabeler to get magnitude target columns
+        print(f"\n[3/7] Applying MagnitudeLabeler (min_magnitude={min_magnitude}%)…")
+        labeler = MagnitudeLabeler(min_magnitude_pct=min_magnitude)
+        df = labeler.label(df)
+        stats = labeler.validate(df)
+        print(
+            f"  Positive rate: {stats['positive_rate']:.2%}  "
+            f"({stats['n_positive']:,} positives)"
+        )
+
+        # 70/30 chronological split (mirrors training)
+        print("\n[4/7] Splitting data (70% train / 30% test)…")
+        n_total   = len(df)
+        split_idx = int(n_total * 0.70)
+        train_df  = df.iloc[:split_idx].reset_index(drop=True)
+        test_df   = df.iloc[split_idx:].reset_index(drop=True)
+        print(
+            f"  Train: {len(train_df):,} rows  "
+            f"({train_df['date'].min()} → {train_df['date'].max()})"
+        )
+        print(
+            f"  Test : {len(test_df):,} rows  "
+            f"({test_df['date'].min()} → {test_df['date'].max()})"
+        )
+        fresh_2026 = test_df[test_df["date"] >= "2026-01-01"] if "date" in test_df.columns else test_df.iloc[0:0]
+        print(f"  Fresh 2026 subset: {len(fresh_2026):,} rows")
+
+        train_dates = set(train_df["date"].unique()) if "date" in train_df.columns else set()
+        test_dates  = set(test_df["date"].unique())  if "date" in test_df.columns else set()
+
+        # ── Run all 9 leakage tests ─────────────────────────────────────
+        print("\n[5/7] Running leakage detection tests…")
+        detector = LeakageDetector()
+
+        # Test 1: Random data
+        print(f"  Test 1/9: Random data test ({random_samples:,} samples)…")
+        r1 = detector.test_on_random_data(
+            model_obj,
+            feature_cols=feature_cols,
+            n_samples=random_samples,
+            high_confidence_threshold=0.80,
+            max_acceptable_signals=50,   # 50/10000 = 0.5% — generous for high base-rate task
+        )
+        status1 = "FAIL" if r1["leakage_detected"] else "PASS"
+        print(
+            f"    -> {status1}  |  {r1['high_confidence_count']} high-conf signals on "
+            f"{random_samples:,} random rows  |  "
+            f"avg_p={r1['avg_confidence']:.3f}  max_p={r1['max_confidence']:.3f}"
+        )
+
+        # Test 2: Source-code audit
+        print("  Test 2/9: Source code audit…")
+        r2 = detector.audit_feature_definitions()
+        status2 = "FAIL" if r2["leakage_likely"] else "PASS"
+        print(f"    -> {status2}  |  {r2['pattern_count']} suspicious pattern(s)")
+
+        # Test 3: Known lookahead features
+        print("  Test 3/9: Known lookahead features check…")
+        r3 = detector.check_known_lookahead_features(feature_cols)
+        status3 = "FAIL" if r3["leakage_detected"] else "PASS"
+        n_la = len(r3.get("lookahead_features", []))
+        print(f"    -> {status3}  |  checked {r3['features_checked']} features")
+        for item in r3.get("lookahead_features", []):
+            print(f"       DETECTED: '{item['feature']}'")
+
+        # Test 4: Target columns not in feature set
+        print("  Test 4/9: Target columns not in feature set…")
+        r4 = detector.verify_target_not_in_features(feature_cols)
+        status4 = "FAIL" if r4["leakage_detected"] else "PASS"
+        print(f"    -> {status4}  |  contaminated: {r4.get('contaminated_cols', [])}")
+
+        # Test 5: Temporal ordering
+        print("  Test 5/9: Temporal ordering…")
+        r5 = detector.verify_temporal_ordering(df)
+        status5 = "PASS" if r5.get("ordering_valid") else "WARN"
+        print(
+            f"    -> {status5}  |  {r5.get('violations', 0)} violation(s) "
+            f"in {len(df):,} rows"
+        )
+
+        # Test 6: Train/test contamination
+        print("  Test 6/9: Train/test contamination…")
+        r6 = detector.detect_train_test_contamination(
+            list(train_dates), list(test_dates)
+        )
+        status6 = "FAIL" if r6.get("contamination_detected") else "PASS"
+        print(
+            f"    -> {status6}  |  "
+            f"{r6.get('overlap_count', 0)} overlapping dates  |  "
+            f"gap={r6.get('gap_days', '?')} days"
+        )
+
+        # Test 7: 120-min correlation analysis
+        print("  Test 7/9: 120-minute correlation analysis…")
+        r7 = detector.check_120min_specific_leaks(df, feature_cols)
+        n_name  = len(r7.get("suspicious_by_name", []))
+        n_corr  = len([x for x in r7.get("suspicious_by_correlation", []) if x.get("severity") == "HIGH"])
+        status7 = "FAIL" if r7.get("leakage_suspected") else (
+            "WARN" if n_name > 0 else "PASS"
+        )
+        print(
+            f"    -> {status7}  |  outcome col: {r7.get('outcome_column_used')}  "
+            f"|  {n_name} name pattern(s)  |  {n_corr} suspicious corr(s)"
+        )
+        for item in r7.get("suspicious_by_name", []):
+            print(f"       NAME FLAG: '{item['feature']}'")
+        top5_corr = sorted(
+            r7.get("correlation_table_top20", []),
+            key=lambda x: x.get("abs_corr", 0),
+            reverse=True,
+        )[:5]
+        if top5_corr:
+            print("       Top 5 feature correlations with outcome:")
+            for item in top5_corr:
+                print(f"         {item['feature']:<40} {item['correlation']:>8.4f}")
+
+        # Test 8: Feature importance red-flag analysis
+        print("  Test 8/9: Feature importance red-flag analysis…")
+        r8 = detector.analyze_feature_importance(model_obj, feature_cols, top_n=10)
+        status8 = "FAIL" if r8.get("leakage_suspected") else "PASS"
+        print(f"    -> {status8}  |  top feature: {r8.get('top_feature')}")
+        for flag in r8.get("red_flags", []):
+            print(f"       {'WARNING' if 'WARNING' in flag else 'CRITICAL'}: {flag}")
+        print("\n  Top 10 features by importance:")
+        for entry in r8.get("ranked_features", [])[:10]:
+            rank_str = f"{entry['rank']:>2}. {entry['feature']:<42} {entry['importance_pct']}"
+            flag = ""
+            if "CRITICAL" in entry.get("flag", ""):
+                flag = " [CRITICAL]"
+            elif "WARNING" in entry.get("flag", ""):
+                flag = " [WARN]"
+            print(f"     {rank_str}{flag}")
+
+        # Test 9: Magnitude-specific leakage
+        print("  Test 9/9: Magnitude-specific leakage checks…")
+        r9 = detector.check_magnitude_specific_leaks(df, feature_cols)
+        status9 = "FAIL" if r9["leakage_detected"] else "PASS"
+        n_forbidden = len(r9.get("forbidden_in_features", []))
+        n_future    = len(r9.get("suspicious_by_name", []))
+        n_high_corr = len([x for x in r9.get("suspicious_by_correlation", []) if x.get("severity") == "HIGH"])
+        print(
+            f"    -> {status9}  |  outcome col: {r9.get('outcome_column_used')}  "
+            f"|  {n_forbidden} forbidden col(s)  |  "
+            f"{n_future} future-name(s)  |  {n_high_corr} high-corr(s)"
+        )
+        for item in r9.get("forbidden_in_features", []):
+            print(f"       FORBIDDEN: '{item['feature']}' — {item['reason']}")
+        for item in r9.get("suspicious_by_name", []):
+            print(f"       FUTURE NAME: '{item['feature']}'")
+        mag_top5 = sorted(
+            r9.get("correlation_table_top20", []),
+            key=lambda x: x.get("abs_corr", 0),
+            reverse=True,
+        )[:5]
+        if mag_top5:
+            print(f"       Top 5 feature correlations with {r9.get('outcome_column_used')}:")
+            for item in mag_top5:
+                sev = next(
+                    (x["severity"] for x in r9.get("suspicious_by_correlation", []) if x["feature"] == item["feature"]),
+                    "",
+                )
+                marker = "  [HIGH]" if sev == "HIGH" else ("  [MOD]" if sev == "MODERATE" else "")
+                print(f"         {item['feature']:<40} {item['correlation']:>8.4f}{marker}")
+
+        # ── Precision at thresholds on test holdout ────────────────────
+        print(f"\n[6/7] Precision at thresholds on test holdout…")
+        X_test_cols = []
+        for fc in feature_cols:
+            if fc in test_df.columns:
+                X_test_cols.append(test_df[fc].fillna(0.0).values)
+            else:
+                X_test_cols.append(_np.zeros(len(test_df), dtype=_np.float32))
+        X_test = _np.column_stack(X_test_cols).astype(_np.float32)
+        y_test = test_df[target_col].values if target_col in test_df.columns else test_df["target_magnitude"].values
+
+        print(f"  Model: {model_stem}  [{len(test_df):,} rows, {len(test_dates)} days]")
+        test_precision_rows = []
+        print()
+        print(f"   {'Thresh':>6}   {'Signals':>8}  {'Per Day':>7}  {'Precision':>10}      TP      FP")
+        print("  " + "-" * 60)
+        y_proba = model_obj.predict_proba(X_test)[:, 1]
+        for thresh in [0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90]:
+            y_pred = (y_proba >= thresh).astype(int)
+            tp = int(((y_pred == 1) & (y_test == 1)).sum())
+            fp = int(((y_pred == 1) & (y_test == 0)).sum())
+            n_sig = tp + fp
+            prec = tp / n_sig if n_sig else 0.0
+            per_day = n_sig / max(len(test_dates), 1)
+            print(
+                f"   {thresh:>6.2f}     {n_sig:>8,}  {per_day:>7.1f}  "
+                f"{prec:>10.1%}    {tp:>6}  {fp:>6}"
+            )
+            test_precision_rows.append({
+                "threshold": thresh,
+                "n_signals": n_sig,
+                "per_day": round(per_day, 2),
+                "precision": round(prec, 4),
+                "n_tp": tp,
+                "n_fp": fp,
+            })
+
+        # Fresh 2026 evaluation
+        if len(fresh_2026) > 0:
+            print(f"\n[6b/7] Fresh 2026 performance ({len(fresh_2026):,} rows)…")
+            fresh_dates = set(fresh_2026["date"].unique()) if "date" in fresh_2026.columns else set()
+            X_fresh_cols = []
+            for fc in feature_cols:
+                if fc in fresh_2026.columns:
+                    X_fresh_cols.append(fresh_2026[fc].fillna(0.0).values)
+                else:
+                    X_fresh_cols.append(_np.zeros(len(fresh_2026), dtype=_np.float32))
+            X_fresh = _np.column_stack(X_fresh_cols).astype(_np.float32)
+            y_fresh = fresh_2026[target_col].values if target_col in fresh_2026.columns else fresh_2026["target_magnitude"].values
+            y_fresh_proba = model_obj.predict_proba(X_fresh)[:, 1]
+            fresh_dates_range = (
+                f"{fresh_2026['date'].min()} → {fresh_2026['date'].max()}"
+                if "date" in fresh_2026.columns else "unknown range"
+            )
+            print(f"  Dates: {fresh_dates_range}, {len(fresh_dates)} trading days")
+            print()
+            print(f"   {'Thresh':>6}   {'Signals':>8}  {'Per Day':>7}  {'Precision':>10}      TP      FP")
+            print("  " + "-" * 60)
+            for thresh in [0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90]:
+                y_pred_f = (y_fresh_proba >= thresh).astype(int)
+                tp_f = int(((y_pred_f == 1) & (y_fresh == 1)).sum())
+                fp_f = int(((y_pred_f == 1) & (y_fresh == 0)).sum())
+                n_f  = tp_f + fp_f
+                prec_f = tp_f / n_f if n_f else 0.0
+                pd_f   = n_f / max(len(fresh_dates), 1)
+                print(
+                    f"   {thresh:>6.2f}     {n_f:>8,}  {pd_f:>7.1f}  "
+                    f"{prec_f:>10.1%}    {tp_f:>6}  {fp_f:>6}"
+                )
+
+        # ── Save report ─────────────────────────────────────────────────
+        print(f"\n[7/7] Generating audit report…")
+        report = detector.generate_report(
+            str(out_dir / f"{model_stem}_magnitude_audit.json")
+        )
+        report["model_path"]             = str(model_path)
+        report["model_type"]             = model_type
+        report["n_features"]             = len(feature_cols)
+        report["min_magnitude_pct"]      = min_magnitude
+        report["test_precision_results"] = test_precision_rows
+
+        # Re-save enriched report
+        with open(out_dir / f"{model_stem}_magnitude_audit.json", "w") as fh:
+            _json.dump(report, fh, indent=2, default=str)
+
+        # ── Verdict ─────────────────────────────────────────────────────
+        all_statuses = [status1, status2, status3, status4, status6, status8, status9]
+        any_fail     = any(s == "FAIL" for s in all_statuses)
+
+        print()
+        print("=" * width)
+        print("  MAGNITUDE AUDIT VERDICT")
+        print("=" * width)
+        print()
+        print(f"  Model:          {model_stem}")
+        print(f"  Model type:     {model_type}")
+        print(f"  Features:       {len(feature_cols)} columns")
+        print(f"  Overall:        {'LEAKAGE DETECTED' if any_fail else 'NO LEAKAGE DETECTED'}")
+        print(f"  Safe to use:    {'NO' if any_fail else 'YES'}")
+        print()
+
+        if report["critical_issues"]:
+            print(f"  Critical issues ({len(report['critical_issues'])}):")
+            for issue in report["critical_issues"]:
+                print(f"    x {issue}")
+        else:
+            print("  No critical issues found.")
+            print()
+
+        # Interpretation
+        if not any_fail:
+            # Check random data specifics
+            rand_high = r1["high_confidence_count"]
+            rand_max  = r1["max_confidence"]
+            base_rate = stats["positive_rate"]
+            print("  Interpretation:")
+            print(
+                f"    Model fires {rand_high} signal(s) on {random_samples:,} random rows "
+                f"(max p={rand_max:.3f})."
+            )
+            if rand_max < 0.60:
+                print("    -> Random test: model is uncertain on noise. CLEAN.")
+            elif rand_max < 0.80:
+                print(
+                    "    -> Random test: moderate confidence on noise (p < 0.80). "
+                    "Possible but not alarming."
+                )
+            else:
+                print(
+                    "    -> Random test: WARNING — model shows high confidence on noise. "
+                    "Investigate further."
+                )
+            print(
+                f"\n    Base rate: {base_rate:.1%} positive. Precision above "
+                f"{base_rate:.0%} is genuine model lift."
+            )
+            best_prec = max(r["precision"] for r in test_precision_rows if r["n_signals"] > 0) if test_precision_rows else 0
+            print(
+                f"    Best test precision: {best_prec:.1%}. "
+                f"Lift above base rate: {best_prec - base_rate:+.1%}."
+            )
+            if best_prec - base_rate > 0.10:
+                print("    -> GENUINE model lift confirmed. No leakage detected.")
+                print(
+                    "    -> Proceed to fresh out-of-sample validation before "
+                    "live deployment."
+                )
+            else:
+                print(
+                    "    -> Model barely exceeds base rate — "
+                    "precision may be driven by base rate alone."
+                )
+        else:
+            print("  -> LEAKAGE CONFIRMED — do NOT use this model for trading.")
+
+        print(
+            f"\n  Report saved: {out_dir / f'{model_stem}_magnitude_audit.json'}"
+        )
+        print(f"  Log saved:    {log_path}")
+        print("=" * width)
+
+        _sys.stdout = old_stdout
+        log_fh.close()
+
+    except Exception as exc:
+        import traceback
+        try:
+            _sys.stdout = old_stdout
+            log_fh.close()
+        except Exception:
+            pass
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)

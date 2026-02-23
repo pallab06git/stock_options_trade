@@ -559,6 +559,138 @@ class LeakageDetector:
         return result
 
     # ------------------------------------------------------------------
+    # Test 9: Magnitude-specific leakage checks
+    # ------------------------------------------------------------------
+
+    def check_magnitude_specific_leaks(
+        self,
+        df: pd.DataFrame,
+        feature_cols: List[str],
+        high_corr_threshold: float = 0.50,
+        mod_corr_threshold: float = 0.30,
+    ) -> Dict[str, Any]:
+        """Check for leakage patterns specific to magnitude prediction models.
+
+        Three complementary checks:
+
+        1. **Forbidden column names** — any of the magnitude label columns
+           (``target_magnitude``, ``abs_max_move_pct``, ``move_direction``,
+           ``magnitude_bucket``) or the raw outcome columns (``max_gain_120m``,
+           ``min_loss_120m``) appearing in the feature set would be direct
+           label leakage.
+
+        2. **Correlation with magnitude target** — high Pearson |corr| against
+           ``abs_max_move_pct`` (the continuous magnitude target) flags features
+           that may implicitly encode future price movement.
+
+        3. **Future-looking name patterns** — names containing ``future``,
+           ``lookforward``, ``time_to_peak``, ``peak_gain`` suggest features
+           computed from data after bar T.
+
+        Args:
+            df: DataFrame with both feature columns and magnitude label columns.
+            feature_cols: Feature names used by the model.
+            high_corr_threshold: |corr| ≥ this → HIGH suspicion.
+            mod_corr_threshold:  |corr| ≥ this → MODERATE suspicion.
+
+        Returns:
+            Dict with ``leakage_detected``, ``forbidden_in_features``,
+            ``suspicious_by_name``, ``suspicious_by_correlation``,
+            ``correlation_table_top20``, ``outcome_column_used``.
+        """
+        # ── Check 1: Forbidden magnitude columns in feature set ────────
+        _MAGNITUDE_FORBIDDEN: frozenset = frozenset({
+            "target_magnitude",
+            "abs_max_move_pct",
+            "move_direction",
+            "magnitude_bucket",
+            "max_gain_120m",
+            "min_loss_120m",
+            "time_to_max_min",
+            "max_gain_pct",
+            "target",
+            "target_sustained",
+        })
+        forbidden_found = [
+            {
+                "feature": f,
+                "reason": (
+                    "Direct magnitude label / target column — "
+                    "encodes the outcome being predicted"
+                ),
+            }
+            for f in feature_cols
+            if f in _MAGNITUDE_FORBIDDEN
+        ]
+
+        # ── Check 2: Correlation with magnitude target ─────────────────
+        outcome_col: Optional[str] = None
+        for candidate in ("abs_max_move_pct", "max_gain_120m", "target_magnitude"):
+            if candidate in df.columns:
+                outcome_col = candidate
+                break
+
+        corr_records: List[Dict[str, Any]] = []
+        suspicious_by_corr: List[Dict[str, Any]] = []
+
+        if outcome_col is not None:
+            outcome_series = df[outcome_col].astype(float)
+            for f in feature_cols:
+                if f not in df.columns:
+                    continue
+                try:
+                    corr_val = float(df[f].astype(float).corr(outcome_series))
+                except Exception:
+                    corr_val = float("nan")
+                abs_corr = abs(corr_val) if not np.isnan(corr_val) else 0.0
+                entry: Dict[str, Any] = {
+                    "feature": f,
+                    "correlation": round(corr_val, 4),
+                    "abs_corr": round(abs_corr, 4),
+                }
+                corr_records.append(entry)
+
+                if abs_corr >= high_corr_threshold:
+                    suspicious_by_corr.append({**entry, "severity": "HIGH"})
+                elif abs_corr >= mod_corr_threshold:
+                    suspicious_by_corr.append({**entry, "severity": "MODERATE"})
+
+            corr_records.sort(key=lambda x: x["abs_corr"], reverse=True)
+
+        # ── Check 3: Future-looking name patterns ──────────────────────
+        _FUTURE_PATTERN: re.Pattern = re.compile(
+            r"future|lookforward|time_to_peak|peak_gain|next_bar|fwd_",
+            re.IGNORECASE,
+        )
+        suspicious_by_name = [
+            {
+                "feature": f,
+                "reason": "Name pattern implies data from future bars",
+            }
+            for f in feature_cols
+            if _FUTURE_PATTERN.search(f)
+        ]
+
+        leakage_detected = (
+            len(forbidden_found) > 0
+            or len(suspicious_by_name) > 0
+            or any(r.get("severity") == "HIGH" for r in suspicious_by_corr)
+        )
+
+        result: Dict[str, Any] = {
+            "leakage_detected": leakage_detected,
+            "forbidden_in_features": forbidden_found,
+            "suspicious_by_name": suspicious_by_name,
+            "suspicious_by_correlation": suspicious_by_corr,
+            "correlation_table_top20": corr_records[:20],
+            "outcome_column_used": outcome_col,
+            "high_corr_threshold": high_corr_threshold,
+            "mod_corr_threshold": mod_corr_threshold,
+        }
+        self.results["magnitude_specific_leaks"] = result
+        return result
+
+    # ------------------------------------------------------------------
     # Test 8: Feature importance analysis with red-flag detection
     # ------------------------------------------------------------------
 
@@ -751,6 +883,24 @@ class LeakageDetector:
             for flag in fi.get("red_flags", []):
                 if "CRITICAL" in flag:
                     critical_issues.append(flag)
+
+        # Magnitude-specific leakage (test 9)
+        ms = self.results.get("magnitude_specific_leaks", {})
+        if ms.get("leakage_detected"):
+            for item in ms.get("forbidden_in_features", []):
+                critical_issues.append(
+                    f"Forbidden magnitude column in feature set: '{item['feature']}' — {item['reason']}"
+                )
+            for item in ms.get("suspicious_by_name", []):
+                critical_issues.append(
+                    f"Future-looking name pattern in features: '{item['feature']}'"
+                )
+            for item in ms.get("suspicious_by_correlation", []):
+                if item.get("severity") == "HIGH":
+                    critical_issues.append(
+                        f"High correlation [{item.get('abs_corr', '?'):.3f}] "
+                        f"with magnitude target: '{item['feature']}'"
+                    )
 
         overall_leakage = len(critical_issues) > 0
 
