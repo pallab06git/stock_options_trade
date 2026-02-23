@@ -2264,6 +2264,53 @@ def sustained_movement_experiment(
         feature_cols = sorted(feature_cols)
         click.echo(f"  Feature columns: {len(feature_cols)}")
 
+        # ── Feature list verification ───────────────────────────────────
+        # Task 1: Print full feature list and check for forbidden columns.
+        # Forbidden columns directly encode future outcome info and would
+        # constitute data leakage if present in the feature set.
+        _FORBIDDEN_FEATURE_COLS = {
+            "max_gain_intraday",
+            "gain_magnitude_bucket",
+            "gain_at_confirmation",
+            "max_gain_during_sustain",
+            "peak_gain_time",
+            "reversion_time",
+            "sustain_duration",
+        }
+        click.echo("\n  --- Feature List Verification ---")
+        click.echo(f"  Checking {len(feature_cols)} feature(s) against "
+                   f"{len(_FORBIDDEN_FEATURE_COLS)} forbidden names:")
+        forbidden_found = [c for c in feature_cols if c in _FORBIDDEN_FEATURE_COLS]
+        if forbidden_found:
+            click.echo(
+                f"\n  🚨 LEAKAGE ALERT: {len(forbidden_found)} forbidden column(s) "
+                f"found in feature set:",
+                err=True,
+            )
+            for col in forbidden_found:
+                click.echo(f"    ❌ {col}", err=True)
+        else:
+            click.echo("  ✅ No forbidden columns detected in feature set.")
+
+        click.echo(f"\n  All {len(feature_cols)} features (alphabetical):")
+        for i, col in enumerate(feature_cols, start=1):
+            marker = "  ❌ FORBIDDEN" if col in _FORBIDDEN_FEATURE_COLS else ""
+            click.echo(f"    {i:>3}. {col}{marker}")
+
+        # Task 4: Magnitude bucketing data lineage note.
+        # The `magnitude_bucket` column is produced by SustainedMovementLabeler
+        # from ACTUAL future bar prices (gain_pct_at_confirmation = the real
+        # price % change at the confirmation bar).  It is NOT derived from any
+        # model prediction or feature — so precision-by-magnitude measures how
+        # well the model identifies REAL large-move events, not a circular stat.
+        click.echo(
+            "\n  NOTE (magnitude bucketing): 'magnitude_bucket' in test_df comes "
+            "from SustainedMovementLabeler — it reflects the ACTUAL price change "
+            "at the confirmation bar, computed from raw bar data AFTER training. "
+            "It is excluded from the feature set and is used only for outcome "
+            "stratification, so precision-by-magnitude is free of leakage."
+        )
+
         # ── Step 4: Train models with Optuna ───────────────────────────
         click.echo(
             f"\n[4/5] Training XGBoost + LightGBM + RandomForest "
@@ -2365,6 +2412,41 @@ def sustained_movement_experiment(
             )
             for k, v in sorted(agr_t.get("agreement_breakdown", {}).items()):
                 click.echo(f"    {k.replace('_', ' ')}: {v}")
+
+        # ── Leakage verification ───────────────────────────────────────
+        click.echo("\n" + "=" * 70)
+        click.echo("  LEAKAGE VERIFICATION")
+        click.echo("=" * 70)
+
+        for model_name, artifact in artifacts.items():
+            model_obj   = artifact["model"]
+            model_fcols = artifact.get("feature_cols") or feature_cols
+
+            # Task 2: Random data test
+            click.echo(f"\n  [{model_name}] Random-noise test ({10_000:,} rows):")
+            rand_result = evaluator.test_on_random_data(
+                model=model_obj,
+                feature_cols=model_fcols,
+                n_samples=10_000,
+            )
+            prefix = "  🚨" if rand_result["leakage_suspected"] else "  ✅"
+            click.echo(f"    {prefix} {rand_result['verdict']}")
+
+            # Task 3: Feature importance
+            click.echo(f"\n  [{model_name}] Top-20 feature importances:")
+            fi_df = evaluator.print_feature_importance(
+                model=model_obj,
+                feature_cols=model_fcols,
+                top_n=20,
+            )
+            if fi_df.empty:
+                click.echo("    (no feature_importances_ available)")
+            else:
+                click.echo(
+                    "    " + fi_df.to_string(index=False).replace("\n", "\n    ")
+                )
+
+        click.echo("\n" + "=" * 70)
 
         # Save all results
         saved_files = evaluator.save_results(eval_results, report_df, out_dir)

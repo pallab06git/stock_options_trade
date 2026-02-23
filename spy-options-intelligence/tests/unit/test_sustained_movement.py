@@ -532,3 +532,66 @@ class TestSustainedMovementEvaluator:
                 for t_data in by_t.values():
                     for bucket in MAGNITUDE_BUCKETS:
                         assert bucket in t_data
+
+    # ------------------------------------------------------------------
+    # test_on_random_data
+    # ------------------------------------------------------------------
+
+    def test_random_data_no_leakage_for_low_confidence_model(self):
+        """Model that always predicts 0.5 should never trigger leakage flag."""
+        evaluator = SustainedMovementEvaluator()
+        model = MagicMock()
+        # Always return proba 0.5 — no high-confidence signals
+        model.predict_proba.side_effect = lambda X: np.column_stack([
+            np.full(len(X), 0.5), np.full(len(X), 0.5)
+        ])
+        feature_cols = [f"feat_{i}" for i in range(5)]
+        result = evaluator.test_on_random_data(model, feature_cols, n_samples=1000)
+
+        assert result["n_samples"] == 1000
+        assert result["n_features"] == 5
+        assert result["high_conf_signals"] == 0
+        assert result["leakage_suspected"] is False
+        assert "OK" in result["verdict"]
+
+    def test_random_data_leakage_flagged_for_high_confidence_model(self):
+        """Model that always predicts 0.95 should trigger the leakage flag."""
+        evaluator = SustainedMovementEvaluator()
+        model = MagicMock()
+        # Always return proba 0.95 — all 10 000 rows are high-confidence
+        model.predict_proba.side_effect = lambda X: np.column_stack([
+            np.full(len(X), 0.05), np.full(len(X), 0.95)
+        ])
+        feature_cols = [f"feat_{i}" for i in range(3)]
+        result = evaluator.test_on_random_data(model, feature_cols, n_samples=10_000)
+
+        assert result["leakage_suspected"] is True
+        assert result["high_conf_signals"] == 10_000
+        assert "LEAKAGE SUSPECTED" in result["verdict"]
+
+    # ------------------------------------------------------------------
+    # print_feature_importance
+    # ------------------------------------------------------------------
+
+    def test_feature_importance_returns_dataframe(self):
+        """Model with feature_importances_ returns ranked DataFrame."""
+        evaluator = SustainedMovementEvaluator()
+        model = MagicMock()
+        model.feature_importances_ = np.array([0.1, 0.5, 0.2, 0.05, 0.15])
+        feature_cols = [f"feat_{i}" for i in range(5)]
+        df = evaluator.print_feature_importance(model, feature_cols, top_n=3)
+
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 3  # top_n applied
+        assert "Feature" in df.columns
+        assert "Importance" in df.columns
+        # Top feature should be the one with importance 0.5
+        assert df.iloc[0]["Feature"] == "feat_1"
+
+    def test_feature_importance_empty_when_no_attribute(self):
+        """Model without feature_importances_ returns empty DataFrame."""
+        evaluator = SustainedMovementEvaluator()
+        model = MagicMock(spec=[])  # no attributes at all
+        result = evaluator.print_feature_importance(model, ["a", "b"])
+        assert isinstance(result, pd.DataFrame)
+        assert result.empty

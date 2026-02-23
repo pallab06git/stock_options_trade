@@ -477,3 +477,117 @@ class SustainedMovementEvaluator:
             }
 
         return agreement
+
+    # ------------------------------------------------------------------
+    # Leakage verification helpers
+    # ------------------------------------------------------------------
+
+    def test_on_random_data(
+        self,
+        model,
+        feature_cols: List[str],
+        n_samples: int = 10_000,
+    ) -> Dict[str, Any]:
+        """Leakage check: run the model on pure Gaussian noise.
+
+        If the model generates many high-confidence (≥ 70 %) signals on
+        completely random data it likely absorbed spurious patterns from
+        future-leaking features.
+
+        Args:
+            model:        Trained sklearn-compatible model with ``predict_proba``.
+            feature_cols: Feature column names (used to size the noise matrix).
+            n_samples:    Number of random rows to generate.  Default: 10_000.
+
+        Returns:
+            Dict with keys:
+              - ``n_samples``           int
+              - ``n_features``          int
+              - ``high_conf_signals``   int   (predicted proba ≥ 0.70)
+              - ``high_conf_rate``      float
+              - ``mean_proba``          float
+              - ``max_proba``           float
+              - ``leakage_suspected``   bool  (True if > 100 high-conf signals)
+              - ``verdict``             str   human-readable summary
+        """
+        n_features = len(feature_cols)
+        rng = np.random.RandomState(42)
+        X_noise = rng.randn(n_samples, n_features).astype(np.float32)
+
+        probas = model.predict_proba(X_noise)[:, 1]
+        high_conf = int((probas >= 0.70).sum())
+        high_conf_rate = float(high_conf / max(n_samples, 1))
+        mean_proba = float(probas.mean())
+        max_proba = float(probas.max())
+
+        leakage = high_conf > 100
+
+        if leakage:
+            verdict = (
+                f"LEAKAGE SUSPECTED: {high_conf:,} high-confidence signals on random noise "
+                f"({high_conf_rate:.2%} of {n_samples:,} rows).  "
+                f"Mean proba={mean_proba:.4f}, max proba={max_proba:.4f}."
+            )
+        else:
+            verdict = (
+                f"OK: only {high_conf} high-confidence signals on random noise "
+                f"({high_conf_rate:.4%} of {n_samples:,} rows).  "
+                f"Mean proba={mean_proba:.4f}, max proba={max_proba:.4f}."
+            )
+
+        logger.info(f"test_on_random_data: {verdict}")
+        return {
+            "n_samples":         n_samples,
+            "n_features":        n_features,
+            "high_conf_signals": high_conf,
+            "high_conf_rate":    high_conf_rate,
+            "mean_proba":        mean_proba,
+            "max_proba":         max_proba,
+            "leakage_suspected": leakage,
+            "verdict":           verdict,
+        }
+
+    def print_feature_importance(
+        self,
+        model,
+        feature_cols: List[str],
+        top_n: int = 20,
+    ) -> pd.DataFrame:
+        """Print a ranked feature importance table.
+
+        Works with any model exposing ``feature_importances_``
+        (XGBoost, LightGBM, RandomForest).
+
+        Args:
+            model:        Trained model with ``feature_importances_`` attribute.
+            feature_cols: Feature column names (must match model's training order).
+            top_n:        Number of top features to show.  Default: 20.
+
+        Returns:
+            DataFrame with columns [Rank, Feature, Importance] sorted DESC.
+            Returns empty DataFrame if the model has no ``feature_importances_``.
+        """
+        if not hasattr(model, "feature_importances_"):
+            logger.warning(
+                "print_feature_importance: model has no feature_importances_ attribute"
+            )
+            return pd.DataFrame()
+
+        importances = model.feature_importances_
+        cols = list(feature_cols)
+        if len(importances) != len(cols):
+            logger.warning(
+                f"print_feature_importance: importances length {len(importances)} "
+                f"!= feature_cols length {len(cols)} — truncating to min"
+            )
+            n = min(len(importances), len(cols))
+            importances = importances[:n]
+            cols = cols[:n]
+
+        df = (
+            pd.DataFrame({"Feature": cols, "Importance": importances})
+            .sort_values("Importance", ascending=False)
+            .reset_index(drop=True)
+        )
+        df.insert(0, "Rank", range(1, len(df) + 1))
+        return df.head(top_n).reset_index(drop=True)
