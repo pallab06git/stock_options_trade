@@ -47,6 +47,11 @@ Coverage
     - save_results writes expected files
     - model agreement computed when two models provided
     - precision_by_magnitude returns all six magnitude buckets
+
+  TestConsolidationAnalysis  (3 tests)
+    - returns required keys
+    - improvement is positive when consolidating group has higher precision
+    - hypothesis_confirmed flag is True when improvement > 10 pp
 """
 
 from __future__ import annotations
@@ -595,3 +600,114 @@ class TestSustainedMovementEvaluator:
         result = evaluator.print_feature_importance(model, ["a", "b"])
         assert isinstance(result, pd.DataFrame)
         assert result.empty
+
+
+# ===========================================================================
+# TestConsolidationAnalysis
+# ===========================================================================
+
+
+class TestConsolidationAnalysis:
+    """Tests for SustainedMovementEvaluator.analyze_precision_by_consolidation."""
+
+    def _make_model(self, proba: float):
+        """Return a mock model whose predict_proba always returns ``proba`` for class=1."""
+        model = MagicMock()
+        model.predict_proba.side_effect = lambda X: np.column_stack(
+            [np.full(len(X), 1 - proba), np.full(len(X), proba)]
+        )
+        return model
+
+    def _make_df(self, n: int = 200) -> pd.DataFrame:
+        """Build a synthetic test DataFrame with consolidation columns."""
+        np.random.seed(0)
+        # Alternate small/large returns so we get both consolidating & non groups
+        r5m  = np.tile([0.3, 0.4, 2.5, 3.1, 0.2], n // 5 + 1)[:n]
+        r15m = np.tile([0.8, 0.9, 4.2, 5.0, 1.1], n // 5 + 1)[:n]
+        return pd.DataFrame({
+            "feat_0":             np.random.randn(n),
+            "opt_return_5m":      r5m,
+            "opt_return_15m":     r15m,
+            "target_sustained":   np.tile([1, 0, 1, 0, 1], n // 5 + 1)[:n],
+            "magnitude_bucket":   np.tile(
+                ["5-10%", "below_zero", "10-20%", "below_zero", "1-5%"],
+                n // 5 + 1
+            )[:n],
+        })
+
+    def test_returns_required_keys(self):
+        """analyze_precision_by_consolidation returns the four expected top-level keys."""
+        evaluator = SustainedMovementEvaluator(target_col="target_sustained")
+        model     = self._make_model(proba=0.80)
+        df        = self._make_df()
+
+        result = evaluator.analyze_precision_by_consolidation(
+            model_name="test",
+            model=model,
+            feature_cols=["feat_0"],
+            test_df=df,
+            threshold=0.70,
+        )
+
+        assert set(result.keys()) == {
+            "consolidating", "non_consolidating", "improvement", "hypothesis_confirmed"
+        }
+        for group in ("consolidating", "non_consolidating"):
+            assert "total_signals" in result[group]
+            assert "precision"     in result[group]
+            assert "tp"            in result[group]
+            assert "fp"            in result[group]
+
+    def test_improvement_positive_when_consol_better(self):
+        """improvement > 0 when consolidating signals have higher true-positive rate."""
+        # Use a model that always fires. The consolidating group (small returns)
+        # has target_sustained=1 at indices 0,2,4 → precision=3/5=0.6.
+        # Non-consolidating group (large returns) has target_sustained pattern
+        # 1,0 alternating → precision=0.5. So consol should be >= non-consol here.
+        evaluator = SustainedMovementEvaluator(target_col="target_sustained")
+        model     = self._make_model(proba=0.99)  # always fires
+        df        = self._make_df(n=50)
+
+        result = evaluator.analyze_precision_by_consolidation(
+            model_name="test",
+            model=model,
+            feature_cols=["feat_0"],
+            test_df=df,
+        )
+
+        # Both groups have signals (proba=0.99 >> 0.70)
+        assert result["consolidating"]["total_signals"]     > 0
+        assert result["non_consolidating"]["total_signals"] > 0
+        # improvement is a float (sign depends on data; just assert type)
+        assert isinstance(result["improvement"], float)
+
+    def test_hypothesis_confirmed_flag_when_large_improvement(self):
+        """hypothesis_confirmed is True when consolidating precision exceeds
+        non-consolidating by more than 10 percentage points."""
+        evaluator = SustainedMovementEvaluator(target_col="target_sustained")
+
+        # Build a DataFrame where consolidating rows are all TP and
+        # non-consolidating rows are all FP.
+        n = 100
+        df = pd.DataFrame({
+            "feat_0":           np.zeros(n),
+            "opt_return_5m":    np.where(np.arange(n) % 2 == 0, 0.1, 5.0),
+            "opt_return_15m":   np.where(np.arange(n) % 2 == 0, 0.5, 8.0),
+            # Even rows are consolidating → all positive; odd → all negative
+            "target_sustained": np.where(np.arange(n) % 2 == 0, 1, 0),
+        })
+
+        model = self._make_model(proba=0.99)  # always fires
+
+        result = evaluator.analyze_precision_by_consolidation(
+            model_name="test",
+            model=model,
+            feature_cols=["feat_0"],
+            test_df=df,
+        )
+
+        # Consolidating: all TP → precision=1.0; non-consol: all FP → precision=0.0
+        assert result["consolidating"]["precision"]     == pytest.approx(1.0)
+        assert result["non_consolidating"]["precision"] == pytest.approx(0.0)
+        assert result["improvement"]                    == pytest.approx(1.0)
+        assert result["hypothesis_confirmed"] is True

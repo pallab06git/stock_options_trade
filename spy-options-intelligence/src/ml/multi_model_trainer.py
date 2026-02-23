@@ -217,6 +217,131 @@ class MultiModelTrainer:
 
         return artifacts
 
+    def train_call_put_models_separately(
+        self,
+        df: pd.DataFrame,
+        target_col: str,
+        feature_cols: List[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Train separate XGBoost and LightGBM models for CALL and PUT options.
+
+        Eliminates directional confusion: when a single model trains on both
+        calls and puts simultaneously, SPY directional features become noise
+        (rising SPY helps calls, hurts puts — equal and opposite).  Training
+        type-specific models lets the directional features work as intended.
+
+        ``contract_type`` (1=call, 0=put) is excluded from each model's
+        feature set because it is constant within each subset.
+
+        Args:
+            df:           Full feature DataFrame with ``contract_type`` (1/0),
+                          ``feature_cols``, and ``target_col``.
+            target_col:   Column name of the binary label (0/1).
+            feature_cols: Feature column names; ``contract_type`` is stripped
+                          automatically.
+
+        Returns:
+            Dict with four keys — ``"xgboost_call"``, ``"xgboost_put"``,
+            ``"lightgbm_call"``, ``"lightgbm_put"`` — each an artifact dict
+            compatible with ``ModelComparator`` / ``save_artifacts``.
+
+        Raises:
+            ValueError: If ``contract_type`` column is missing or either type
+                        subset has too few positive examples.
+        """
+        if "contract_type" not in df.columns:
+            raise ValueError(
+                "DataFrame must contain 'contract_type' column (1=call, 0=put)."
+            )
+        if target_col not in df.columns:
+            raise ValueError(f"target_col '{target_col}' not found in df")
+
+        # Drop contract_type from features — it is constant within each subset
+        feature_cols_split = [f for f in feature_cols if f != "contract_type"]
+
+        SEP = "=" * 70
+        print(f"\n{SEP}")
+        print("  TRAINING SEPARATE CALL / PUT MODELS")
+        print(SEP)
+
+        call_df = df[df["contract_type"] == 1].reset_index(drop=True)
+        put_df  = df[df["contract_type"] == 0].reset_index(drop=True)
+
+        print(f"\n  Training data split:")
+        print(f"    CALL rows : {len(call_df):,}  "
+              f"({len(call_df)/max(len(df),1):.1%})  "
+              f"positives={int(call_df[target_col].sum())}")
+        print(f"    PUT  rows : {len(put_df):,}  "
+              f"({len(put_df)/max(len(df),1):.1%})  "
+              f"positives={int(put_df[target_col].sum())}")
+
+        results: Dict[str, Dict[str, Any]] = {}
+        saved_at = datetime.now().isoformat(timespec="seconds")
+
+        for option_type, type_df in [("call", call_df), ("put", put_df)]:
+            label = option_type.upper()
+            print(f"\n{SEP}")
+            print(f"  {label} MODEL TRAINING  ({len(type_df):,} rows)")
+            print(SEP)
+
+            if int(type_df[target_col].sum()) < 20:
+                raise ValueError(
+                    f"{label} subset has fewer than 20 positive examples "
+                    f"({int(type_df[target_col].sum())}) — cannot train reliably."
+                )
+
+            X_all = type_df[feature_cols_split].fillna(0.0).values.astype(np.float32)
+            y_all = type_df[target_col].values.astype(np.int8)
+
+            # Chronological 80/20 split
+            n = len(type_df)
+            train_end = int(n * self.train_ratio)
+            X_train, y_train = X_all[:train_end], y_all[:train_end]
+            X_val,   y_val   = X_all[train_end:], y_all[train_end:]
+
+            # Balance training portion only
+            train_tmp = pd.DataFrame(X_train, columns=feature_cols_split)
+            train_tmp["__target__"] = y_train
+            balanced = undersample_majority(train_tmp, "__target__", self.random_state)
+            X_train_bal = (
+                balanced.drop(columns=["__target__"]).values.astype(np.float32)
+            )
+            y_train_bal = balanced["__target__"].values.astype(np.int8)
+
+            logger.info(
+                f"{label}: {len(type_df)} rows | {len(X_train)} train "
+                f"({len(X_train_bal)} balanced) | {len(X_val)} val"
+            )
+
+            # ── XGBoost ────────────────────────────────────────────────
+            print(f"\n  [{option_type}] XGBoost ({self.n_trials} Optuna trials)…")
+            xgb_artifact = self._train_xgboost(
+                X_train_bal, y_train_bal, X_val, y_val,
+                feature_cols_split, target_col, saved_at,
+            )
+            xgb_artifact["model_name"]  = f"xgboost_{option_type}"
+            xgb_artifact["option_type"] = option_type
+            results[f"xgboost_{option_type}"] = xgb_artifact
+            print(f"    Optuna score : {xgb_artifact['optimization_score']:.4f}")
+            print(f"    Val prec@0.7 : {xgb_artifact['val_precision_at_0_70']:.4f}")
+
+            # ── LightGBM ───────────────────────────────────────────────
+            print(f"\n  [{option_type}] LightGBM ({self.n_trials} Optuna trials)…")
+            lgbm_artifact = self._train_lightgbm(
+                X_train_bal, y_train_bal, X_val, y_val,
+                feature_cols_split, target_col, saved_at,
+            )
+            lgbm_artifact["model_name"]  = f"lightgbm_{option_type}"
+            lgbm_artifact["option_type"] = option_type
+            results[f"lightgbm_{option_type}"] = lgbm_artifact
+            print(f"    Optuna score : {lgbm_artifact['optimization_score']:.4f}")
+            print(f"    Val prec@0.7 : {lgbm_artifact['val_precision_at_0_70']:.4f}")
+
+        print(f"\n{SEP}")
+        print("  TRAINING COMPLETE")
+        print(SEP)
+        return results
+
     def save_artifacts(
         self,
         artifacts: Dict[str, Dict[str, Any]],

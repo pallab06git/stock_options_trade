@@ -4,7 +4,7 @@
 
 """Comprehensive ML feature engineering for SPY options spike prediction.
 
-Produces one row per minute per option contract with 61 engineered features
+Produces one row per minute per option contract with ~65 engineered features
 and a binary target label: did the option price rise ≥20% in the next 120 min?
 
 Feature groups
@@ -606,6 +606,116 @@ class MLFeatureEngineer:
 
         # --- Option bar counter (sequential within this contract's day) ---
         df["opt_bar_count"] = range(1, len(df) + 1)
+
+        # --- Directional and consolidation features ---
+        df = self._compute_directional_features(df)
+        df = self._compute_consolidation_features(df)
+
+        return df
+
+    def _compute_directional_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add directional momentum features.
+
+        These help distinguish upward moves from downward moves.
+        All features use ONLY past/current data (no lookahead).
+        Must be called AFTER _compute_option_features so that
+        opt_return_1m, opt_return_5m, opt_return_15m, opt_rsi_14,
+        and opt_vs_spy_return_1m are already present.
+        """
+        # 1. Option return sign: +1 (up), -1 (down), 0 (flat)
+        r1m = df.get("opt_return_1m", pd.Series(np.nan, index=df.index))
+        df["opt_return_sign"] = np.sign(r1m).fillna(0)
+
+        # 2. Absolute momentum magnitude for 5m and 15m windows
+        r5m  = df.get("opt_return_5m",  pd.Series(np.nan, index=df.index))
+        r15m = df.get("opt_return_15m", pd.Series(np.nan, index=df.index))
+        df["opt_momentum_5m"]  = r5m.abs().fillna(0)
+        df["opt_momentum_15m"] = r15m.abs().fillna(0)
+
+        # 3. RSI bullish position: 1 if opt_rsi_14 > 50, else 0
+        if "opt_rsi_14" in df.columns:
+            df["rsi_above_50"] = (df["opt_rsi_14"] > 50).astype(int)
+        else:
+            df["rsi_above_50"] = 0
+
+        # 4. Option outperforming SPY on 1m basis
+        if "opt_vs_spy_return_1m" in df.columns:
+            df["opt_outperforming"] = (df["opt_vs_spy_return_1m"] > 0).astype(int)
+        else:
+            df["opt_outperforming"] = 0
+
+        # 5. All-timeframe momentum alignment (1m, 5m, 15m all positive)
+        have_all = all(
+            c in df.columns
+            for c in ["opt_return_1m", "opt_return_5m", "opt_return_15m"]
+        )
+        if have_all:
+            df["momentum_aligned"] = (
+                (df["opt_return_1m"]  > 0)
+                & (df["opt_return_5m"]  > 0)
+                & (df["opt_return_15m"] > 0)
+            ).astype(int)
+        else:
+            df["momentum_aligned"] = 0
+
+        return df
+
+    def _compute_consolidation_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add price-consolidation features.
+
+        Computes:
+        - Granular return windows for every minute 1–20 (fills gaps between
+          the sparse lookback_windows already computed).
+        - tight_{X}pct_{W}m binary flags: 1 when rolling HL range < X% of close
+          over W bars.  Indicates quiet/consolidating price action.
+        - consol_duration_bars: consecutive bars where |opt_return_1m| < 0.3%.
+          Resets to 0 on any large move.  Captures the "coiling spring" pattern.
+        """
+        # --- Granular return windows 1–20m ---
+        close = df.get("close", pd.Series(dtype=float))
+        if len(close) > 0:
+            minutes = df.get(
+                "minutes_since_open",
+                pd.Series(range(len(df)), index=df.index),
+            )
+            for w in range(1, 21):
+                col = f"opt_return_{w}m"
+                if col not in df.columns:
+                    shifted = close.shift(w).replace(0, np.nan)
+                    log_ret = np.log(close / shifted) * 100
+                    df[col] = log_ret.where(minutes >= w, 0.0)
+        else:
+            for w in range(1, 21):
+                col = f"opt_return_{w}m"
+                if col not in df.columns:
+                    df[col] = 0.0
+
+        # --- Tightness (consolidation) flags ---
+        if (
+            "high" in df.columns
+            and "low" in df.columns
+            and "close" in df.columns
+        ):
+            close_safe = df["close"].replace(0, np.nan)
+            for window in [5, 10]:
+                hi = df["high"].rolling(window, min_periods=1).max()
+                lo = df["low"].rolling(window, min_periods=1).min()
+                rng_pct = (hi - lo) / close_safe * 100
+                for pct in [1, 2]:
+                    df[f"tight_{pct}pct_{window}m"] = (rng_pct < pct).astype(int)
+
+        # --- Consolidation duration: consecutive quiet bars ---
+        r1m = df.get("opt_return_1m", pd.Series(0.0, index=df.index))
+        is_quiet = r1m.abs() < 0.3
+        consol: list = []
+        count = 0
+        for quiet in is_quiet:
+            if not quiet:
+                count = 0
+            else:
+                count += 1
+            consol.append(count)
+        df["consol_duration_bars"] = consol
 
         return df
 

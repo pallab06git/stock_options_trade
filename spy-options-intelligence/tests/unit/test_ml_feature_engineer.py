@@ -463,3 +463,102 @@ class TestRun:
         self.eng._output_path = self.tmp / "features"
         stats = self.eng.run(date, date)
         assert 0.0 <= stats["positive_rate"] <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# TestComputeDirectionalFeatures
+# ---------------------------------------------------------------------------
+
+
+class TestComputeDirectionalFeatures:
+    def setup_method(self):
+        import tempfile
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.eng = MLFeatureEngineer(_make_config(self.tmp))
+
+    def test_opt_return_sign_positive(self):
+        """Positive opt_return_1m → sign +1; negative → -1; zero → 0."""
+        df = pd.DataFrame({"opt_return_1m": [1.5, -0.5, 0.0], "opt_rsi_14": [55, 45, 50]})
+        result = self.eng._compute_directional_features(df)
+        assert result.loc[0, "opt_return_sign"] == 1.0
+        assert result.loc[1, "opt_return_sign"] == -1.0
+        assert result.loc[2, "opt_return_sign"] == 0.0
+
+    def test_rsi_above_50_binary(self):
+        """rsi_above_50 is 1 when opt_rsi_14 > 50, 0 when ≤ 50."""
+        df = pd.DataFrame({"opt_rsi_14": [60.0, 40.0, 50.0]})
+        result = self.eng._compute_directional_features(df)
+        assert result.loc[0, "rsi_above_50"] == 1
+        assert result.loc[1, "rsi_above_50"] == 0
+        assert result.loc[2, "rsi_above_50"] == 0  # 50 is not > 50
+
+    def test_momentum_aligned_requires_all_positive(self):
+        """momentum_aligned = 1 only when 1m, 5m, and 15m returns are all positive."""
+        df = pd.DataFrame({
+            "opt_return_1m":  [1.0,  1.0, -0.5],
+            "opt_return_5m":  [2.0,  2.0,  2.0],
+            "opt_return_15m": [3.0, -1.0,  3.0],
+        })
+        result = self.eng._compute_directional_features(df)
+        assert result.loc[0, "momentum_aligned"] == 1  # all positive
+        assert result.loc[1, "momentum_aligned"] == 0  # 15m negative
+        assert result.loc[2, "momentum_aligned"] == 0  # 1m negative
+
+
+# ---------------------------------------------------------------------------
+# TestComputeConsolidationFeatures
+# ---------------------------------------------------------------------------
+
+
+class TestComputeConsolidationFeatures:
+    def setup_method(self):
+        import tempfile
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.eng = MLFeatureEngineer(_make_config(self.tmp))
+
+    def _make_df(self, n=30):
+        """Minimal DataFrame with opt_return_1m, close, high, low."""
+        np.random.seed(1)
+        closes = 2.0 + np.cumsum(np.random.randn(n) * 0.01)
+        return pd.DataFrame({
+            "opt_return_1m": np.random.randn(n) * 0.5,
+            "opt_return_5m": np.random.randn(n) * 1.0,
+            "opt_return_15m": np.random.randn(n) * 1.5,
+            "close": closes,
+            "high":  closes + 0.05,
+            "low":   closes - 0.05,
+            "minutes_since_open": np.arange(1, n + 1),
+        })
+
+    def test_granular_returns_filled_for_all_windows(self):
+        """opt_return_Nm is present for every N in 1–20 after the call."""
+        df = self._make_df(n=25)
+        result = self.eng._compute_consolidation_features(df)
+        for w in range(1, 21):
+            assert f"opt_return_{w}m" in result.columns, f"Missing opt_return_{w}m"
+
+    def test_tightness_flags_are_binary(self):
+        """tight_*pct_*m flags are 0 or 1."""
+        df = self._make_df()
+        result = self.eng._compute_consolidation_features(df)
+        flag_cols = [c for c in result.columns if c.startswith("tight_")]
+        assert len(flag_cols) > 0
+        for col in flag_cols:
+            assert set(result[col].unique()).issubset({0, 1}), \
+                f"{col} contains values other than 0/1"
+
+    def test_consol_duration_resets_after_large_move(self):
+        """consol_duration_bars resets to 0 after a bar with |1m return| >= 0.3%."""
+        df = pd.DataFrame({
+            "opt_return_1m": [0.1, 0.1, 0.1, 5.0, 0.1, 0.1],
+            "close": [2.0, 2.01, 2.02, 2.5, 2.49, 2.48],
+        })
+        result = self.eng._compute_consolidation_features(df)
+        assert result.loc[0, "consol_duration_bars"] == 1
+        assert result.loc[1, "consol_duration_bars"] == 2
+        assert result.loc[2, "consol_duration_bars"] == 3
+        assert result.loc[3, "consol_duration_bars"] == 0  # large move resets
+        assert result.loc[4, "consol_duration_bars"] == 1
+        assert result.loc[5, "consol_duration_bars"] == 2

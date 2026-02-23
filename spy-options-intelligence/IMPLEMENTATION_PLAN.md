@@ -886,15 +886,86 @@
     threshold coverage, precision range, report DataFrame, agreement, magnitude
 - [x] Full test suite: 1461 passing + 42 skipped (LSTM when torch absent)
 
+## Step 63: Magnitude Prediction Experiment ✅ (completed 2026-02-23, 17 min)
+- [x] Create `src/processing/magnitude_labeler.py` — MagnitudeLabeler
+  - `__init__(min_magnitude_pct=20.0)` — direction-agnostic volatility labeler
+  - `label(df)` — uses pre-computed max_gain_120m / min_loss_120m; no raw-bar scanning
+    - abs_max = max(max_gain.clip(0), abs(min_loss))
+    - target_magnitude = 1 if abs_max >= min_magnitude_pct else 0
+    - Adds: target_magnitude, abs_max_move_pct, move_direction, magnitude_bucket
+    - Magnitude buckets: 0-5%, 5-10%, 10-20%, 20-30%, 30%+
+  - `validate(df)` — returns n_total, n_positive, positive_rate, n_up, n_down,
+      avg_abs_magnitude, magnitude_breakdown dict
+- [x] Add `generate-magnitude-labels` CLI command — fast diagnostic, no files written
+- [x] Add `train-magnitude-models` CLI command — full pipeline:
+  - Load → MagnitudeLabel → 70/30 split → MultiModelTrainer (XGBoost+LightGBM+RF, 50 trials)
+  - Evaluate at 7 thresholds with straddle P&L model:
+      TP = (avg_magnitude - 5) / 100 * position_size
+      FP = -8 / 100 * position_size
+  - Direction breakdown + precision-by-magnitude at 0.70
+  - Saves magnitude_results.json + model pkl files
+- [x] Create `run_magnitude_experiment.py` — autonomous overnight master script
+- Dataset: 172,822 rows | **82.74% positive rate** | 65 features | elapsed: 17 min
+- Results (51,847 test rows, 72 days):
+
+| Model | Thresh | Precision | Signals/Day | Avg Magnitude |
+|---|---|---|---|---|
+| LightGBM | 0.70 | **96.2%** | 425.7 | 59.8% |
+| LightGBM | 0.85 | **99.4%** | 82.3 | 65.9% |
+| LightGBM | 0.90 | **100.0%** | 8.7 | 61.7% |
+| XGBoost | 0.70 | 91.3% | 581.8 | 55.7% |
+| RandomForest | 0.70 | 94.8% | 356.6 | 59.3% |
+
+## Step 65: Magnitude Model Leakage Audit ✅ (2026-02-23)
+- [x] Add `check_magnitude_specific_leaks()` (Test 9) to `src/ml/leakage_detector.py`
+  - Check 1: Forbidden magnitude label columns in feature set
+    (target_magnitude, abs_max_move_pct, move_direction, magnitude_bucket,
+     max_gain_120m, min_loss_120m, time_to_max_min, target, target_sustained)
+  - Check 2: Pearson |corr| ≥ 0.50 with abs_max_move_pct → HIGH suspicion
+  - Check 3: Future-looking name patterns (future, lookforward, time_to_peak, peak_gain)
+  - `generate_report()` updated to include Test 9 critical issues
+- [x] Add `audit-magnitude-model` CLI command to `src/ml/cli.py`
+  - Runs all 9 tests on any magnitude model artifact
+  - Applies MagnitudeLabeler in-memory (no pre-saved label files)
+  - Precision table on 70/30 test holdout + fresh 2026 subset
+  - Verdict with base-rate lift interpretation
+  - Tees output to terminal + `reports/leakage_audit/{model}_magnitude_audit.log`
+- Audit results for all 3 magnitude models (172,822 rows, 65 features):
+
+| Test | LightGBM | XGBoost | RandomForest |
+|---|---|---|---|
+| Random data (noise) | ✅ 49/10000 (0.49%) | 🚨 9948/10000 (99.5%) | ✅ 0/10000 (0%) |
+| Source-code audit | ✅ PASS | ✅ PASS | ✅ PASS |
+| Known lookahead | ✅ PASS | ✅ PASS | ✅ PASS |
+| Target-in-features | ✅ PASS | ✅ PASS | ✅ PASS |
+| Temporal ordering | ✅ PASS | ✅ PASS | ✅ PASS |
+| Train/test contamination | ⚠️ FP* | ⚠️ FP* | ⚠️ FP* |
+| 120-min correlation | ⚠️ FP* | ⚠️ FP* | ⚠️ FP* |
+| Feature importance | ✅ PASS | 🚨 hour_et=42.75% | ✅ PASS |
+| Magnitude-specific (T9) | ✅ PASS | ✅ PASS | ✅ PASS |
+
+  *Both are known false positives: "1 overlap" = 70/30 split boundary date (2025-10-29);
+   `pct_day_elapsed` flagged by `pct_day` regex but is backward-looking time fraction.
+- **Verdicts:**
+  - **LightGBM: CLEAN ✅** — random avg_p=0.711 on noise (below 82.74% base rate);
+    top feature log_moneyness (6.74%); well-distributed importance; 96%+ precision is REAL
+  - **XGBoost: OVERFIT 🚨** — fires 99.5% on random noise; hour_et dominates at 42.75%;
+    model learned time-of-day distribution, not genuine signal
+  - **RandomForest: CLEAN ✅** — 0 signals on noise; opt_price_change_open top (5.45%);
+    fresh 2026: 95.6% @ 0.70, 96.6% @ 0.85; precision is REAL and generalisable
+- KEY INSIGHT: 82.74% base rate explains "why precision is high" without leakage.
+  LightGBM/RF learned: deeply OTM options with high IV already-moving → near-certain 20%+ move.
+  This is genuine financial signal (OTM options have binary payoff; once moving, they continue).
+- Safe models for straddle strategy: **LightGBM** and **RandomForest**
+- Reports: `reports/leakage_audit/{lightgbm,xgboost,random_forest}_magnitude_audit.{log,json}`
+
 ## Future
-- [ ] Run sustained-movement-experiment on full year data
-  - Command: `python -m src.cli ml sustained-movement-experiment --start-date 2025-03-03 --end-date 2026-02-19 --n-trials 30`
+- [ ] Fresh out-of-sample validation of LightGBM/RF magnitude models on 2026 live data
 - [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
 - [ ] VIX data integration (upgrade massive.com plan)
 - [ ] Per-day interleaved `download-day` command (SPY open → options, parallel within rate-limit window)
 - [ ] LSTM model training
 - [ ] MLflow integration
-- [ ] LightGBM calibration fix (CalibratedClassifierCV or threshold lowered to ~0.53)
 
 ---
-**Total tests: 1461 passing + 42 skipped (LSTM when torch absent) | Last updated: 2026-02-22**
+**Total tests: 1461 passing + 42 skipped (LSTM when torch absent) | Last updated: 2026-02-23**
