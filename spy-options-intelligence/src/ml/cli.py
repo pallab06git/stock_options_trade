@@ -6555,3 +6555,403 @@ def audit_magnitude_model(
         click.echo(f"Error: {exc}", err=True)
         click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# final-optimization
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("final-optimization")
+@click.option(
+    "--features-dir",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing *_features.csv files.",
+)
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--n-trials",
+    default=200,
+    type=int,
+    show_default=True,
+    help="Optuna trials per model type (LightGBM and RandomForest).",
+)
+@click.option(
+    "--target-signals-per-day",
+    default=2.5,
+    type=float,
+    show_default=True,
+    help="Desired average number of signals per trading day.",
+)
+@click.option(
+    "--min-magnitude",
+    default=20.0,
+    type=float,
+    show_default=True,
+    help="Minimum absolute % move required for a positive label.",
+)
+@click.option(
+    "--n-mc-simulations",
+    default=1000,
+    type=int,
+    show_default=True,
+    help="Number of Monte Carlo iterations for P&L simulation.",
+)
+@click.option(
+    "--output",
+    default="reports/final_optimization",
+    show_default=True,
+    help="Output directory for models and JSON results.",
+)
+def final_optimization(
+    features_dir,
+    config_dir,
+    n_trials,
+    target_signals_per_day,
+    min_magnitude,
+    n_mc_simulations,
+    output,
+):
+    """Maximum-precision exhaustive search (Step 67).
+
+    Targets ≤3 signals/day at near-100% precision using deep Optuna
+    hyperparameter search on LightGBM and RandomForest, ensemble
+    combination testing, and Monte Carlo P&L simulation.
+
+    \b
+    Pipeline:
+    1. Load all feature CSVs from --features-dir.
+    2. Apply MagnitudeLabeler (direction-agnostic ±20% target).
+    3. Derive feature column list (exclude metadata & label cols).
+    4. Chronological 70/30 split; 80/20 sub-split within train.
+    5. Build numpy arrays for each split.
+    6. Run DeepHyperparameterOptimizer: LightGBM + RandomForest.
+    7. Retrain best models on full training set.
+    8. Test ensemble combinations (AND/OR/AVG strategies).
+    9. Run 1 000-iteration Monte Carlo P&L simulation.
+    10. Save final_optimization_results.json.
+
+    \b
+    Example:
+        python -m src.cli ml final-optimization \\
+            --features-dir data/processed/features \\
+            --n-trials 200 --target-signals-per-day 2.5
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import joblib as _joblib
+    import numpy as _np
+
+    from src.ml.deep_hyperparameter_optimizer import (
+        DeepHyperparameterOptimizer,
+        EnsembleStrategy,
+        MonteCarloSimulator,
+    )
+    from src.ml.train_xgboost import load_features, _NON_FEATURE_COLS
+    from src.processing.magnitude_labeler import MagnitudeLabeler
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        out_dir = _Path(output)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        log_path = out_dir / "final_optimization.log"
+        import sys as _sys
+
+        old_stdout = _sys.stdout
+
+        class _Tee:
+            """Write to both the original stdout and a log file simultaneously."""
+            def __init__(self, orig, f):
+                self._orig = orig
+                self._f    = f
+            def write(self, msg): self._orig.write(msg); self._f.write(msg)
+            def flush(self):      self._orig.flush();    self._f.flush()
+
+        log_fh = open(log_path, "w")
+        _sys.stdout = _Tee(old_stdout, log_fh)
+
+        width = 72
+        print()
+        print("=" * width)
+        print("  FINAL OPTIMIZATION — Maximum Precision / Minimum Signals  (Step 67)")
+        print("=" * width)
+        print(f"  Features dir:          {features_dir}")
+        print(f"  Min magnitude:         {min_magnitude}%")
+        print(f"  Optuna trials/model:   {n_trials}")
+        print(f"  Target signals/day:    {target_signals_per_day}")
+        print(f"  Monte Carlo sims:      {n_mc_simulations:,}")
+        print(f"  Output dir:            {out_dir}")
+        print("=" * width)
+
+        # ── [1/7] Load features ───────────────────────────────────────
+        print("\n[1/7] Loading feature CSVs…")
+        df = load_features(features_dir, None, None)
+        if df.empty:
+            print(f"Error: no feature data found in {features_dir}", file=_sys.stderr)
+            _sys.stdout = old_stdout
+            log_fh.close()
+            sys.exit(1)
+        n_dates = df["date"].nunique() if "date" in df.columns else "?"
+        print(f"  Loaded {len(df):,} rows across {n_dates} dates")
+
+        # ── [2/7] Apply MagnitudeLabeler ──────────────────────────────
+        print(f"\n[2/7] Applying MagnitudeLabeler (min_magnitude={min_magnitude}%)…")
+        labeler    = MagnitudeLabeler(min_magnitude_pct=min_magnitude)
+        labeled_df = labeler.label(df)
+        stats      = labeler.validate(labeled_df)
+        print(
+            f"  Total rows:     {stats['n_total']:,}"
+            f"  |  Positive rate: {stats['positive_rate']:.2%}"
+            f"  ({stats['n_positive']:,} positives)"
+        )
+
+        # ── [3/7] Feature columns ─────────────────────────────────────
+        print("\n[3/7] Deriving feature column list…")
+        _MAGNITUDE_EXTRA_COLS = {
+            "target_magnitude", "abs_max_move_pct", "move_direction", "magnitude_bucket",
+        }
+        feature_cols = sorted([
+            c for c in labeled_df.columns
+            if c not in _NON_FEATURE_COLS and c not in _MAGNITUDE_EXTRA_COLS
+        ])
+        print(f"  Feature columns: {len(feature_cols)}")
+
+        # ── [4/7] Chronological split ─────────────────────────────────
+        print("\n[4/7] Splitting data (70% train / 30% test, then 80/20 sub-split)…")
+        split_idx   = int(len(labeled_df) * 0.70)
+        train_df    = labeled_df.iloc[:split_idx].reset_index(drop=True)
+        test_df_lbl = labeled_df.iloc[split_idx:].reset_index(drop=True)
+
+        sub_idx   = int(len(train_df) * 0.80)
+        train_sub = train_df.iloc[:sub_idx].reset_index(drop=True)
+        val_sub   = train_df.iloc[sub_idx:].reset_index(drop=True)
+
+        val_days  = (
+            val_sub["date"].nunique() if "date" in val_sub.columns
+            else max(len(val_sub) // 390, 1)
+        )
+        test_days = (
+            test_df_lbl["date"].nunique() if "date" in test_df_lbl.columns
+            else max(len(test_df_lbl) // 390, 1)
+        )
+
+        print(
+            f"  Train (full):  {len(train_df):,} rows  "
+            f"({train_df['date'].min()} → {train_df['date'].max()})"
+        )
+        print(f"  Train sub:     {len(train_sub):,} rows")
+        print(f"  Val sub:       {len(val_sub):,} rows  ({val_days} trading days)")
+        print(f"  Test:          {len(test_df_lbl):,} rows  ({test_days} trading days)")
+
+        # ── [5/7] Build numpy arrays ──────────────────────────────────
+        print("\n[5/7] Building numpy arrays…")
+        X_train_sub  = train_sub[feature_cols].fillna(0.0).values.astype(_np.float32)
+        y_train_sub  = train_sub["target_magnitude"].values.astype(_np.int8)
+        X_val_sub    = val_sub[feature_cols].fillna(0.0).values.astype(_np.float32)
+        y_val_sub    = val_sub["target_magnitude"].values.astype(_np.int8)
+
+        X_full_train = train_df[feature_cols].fillna(0.0).values.astype(_np.float32)
+        y_full_train = train_df["target_magnitude"].values.astype(_np.int8)
+        X_test       = test_df_lbl[feature_cols].fillna(0.0).values.astype(_np.float32)
+        y_test       = test_df_lbl["target_magnitude"].values.astype(_np.int8)
+
+        print(
+            f"  X_train_sub={X_train_sub.shape}  X_val={X_val_sub.shape}  "
+            f"X_full_train={X_full_train.shape}  X_test={X_test.shape}"
+        )
+
+        # ── [6/7] Hyperparameter optimisation ────────────────────────
+        print(
+            f"\n[6/7] Optimising LightGBM + RandomForest "
+            f"({n_trials} Optuna trials each)…"
+        )
+        print("  (This will take several hours for n_trials=200)")
+
+        opt = DeepHyperparameterOptimizer(
+            X_train=X_train_sub,
+            y_train=y_train_sub,
+            X_val=X_val_sub,
+            y_val=y_val_sub,
+            val_days=val_days,
+            target_signals_per_day=target_signals_per_day,
+        )
+
+        print("\n  → LightGBM optimisation…")
+        lgbm_result = opt.optimize_lightgbm_precision(n_trials=n_trials)
+        print(
+            f"  LightGBM best score: {lgbm_result['best_value']:.4f}"
+            f"  |  params: {lgbm_result['best_params']}"
+        )
+
+        print("\n  → RandomForest optimisation…")
+        rf_result = opt.optimize_randomforest_precision(n_trials=n_trials)
+        print(
+            f"  RandomForest best score: {rf_result['best_value']:.4f}"
+            f"  |  params: {rf_result['best_params']}"
+        )
+
+        # Retrain best models on the full training set
+        print("\n  Retraining best LightGBM on full training set…")
+        import warnings as _warnings
+        from lightgbm import LGBMClassifier
+        from sklearn.ensemble import RandomForestClassifier
+
+        lgbm_fit_params = {
+            **lgbm_result["best_params"],
+            "random_state": 42,
+            "verbose": -1,
+            "n_jobs": -1,
+        }
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            lgbm_best = LGBMClassifier(**lgbm_fit_params)
+            lgbm_best.fit(X_full_train, y_full_train)
+
+        print("  Retraining best RandomForest on full training set…")
+        rf_fit_params = {
+            **rf_result["best_params"],
+            "random_state": 42,
+            "n_jobs": -1,
+        }
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            rf_best = RandomForestClassifier(**rf_fit_params)
+            rf_best.fit(X_full_train, y_full_train)
+
+        # Save retrained artifacts
+        _joblib.dump(
+            {
+                "model":        lgbm_best,
+                "feature_cols": feature_cols,
+                "best_params":  lgbm_result["best_params"],
+                "model_type":   "lgbm",
+                "best_value":   lgbm_result["best_value"],
+            },
+            out_dir / "lgbm_deep_opt.pkl",
+        )
+        _joblib.dump(
+            {
+                "model":        rf_best,
+                "feature_cols": feature_cols,
+                "best_params":  rf_result["best_params"],
+                "model_type":   "rf",
+                "best_value":   rf_result["best_value"],
+            },
+            out_dir / "rf_deep_opt.pkl",
+        )
+        print(
+            f"  Artifacts saved → {out_dir}/lgbm_deep_opt.pkl"
+            f"  |  {out_dir}/rf_deep_opt.pkl"
+        )
+
+        # ── [7/7] Ensemble + Monte Carlo ──────────────────────────────
+        print("\n[7/7] Testing ensemble combinations + Monte Carlo simulation…")
+
+        ensemble_result = EnsembleStrategy().test_ensemble_combinations(
+            lgbm_model=lgbm_best,
+            rf_model=rf_best,
+            X_test=X_test,
+            y_test=y_test,
+            test_df=test_df_lbl.reset_index(drop=True),
+            n_test_days=test_days,
+            target_signals_per_day=target_signals_per_day,
+        )
+
+        best_combo = ensemble_result["best"]
+        if best_combo is not None:
+            print(
+                f"\n  Best ensemble:  strategy={best_combo['strategy']}"
+                f"  threshold={best_combo['threshold']:.2f}"
+                f"  precision={best_combo['precision']:.3f}"
+                f"  spd={best_combo['signals_per_day']:.2f}"
+                f"  avg_mag={best_combo['avg_magnitude']:.1f}%"
+            )
+            signals_mask = best_combo["signals_mask"]
+        else:
+            print("\n  WARNING: No viable ensemble combination found.")
+            signals_mask = _np.zeros(len(test_df_lbl), dtype=bool)
+
+        # Monte Carlo simulation
+        n_test_months = test_days / 22.0
+        print(f"\n  Running Monte Carlo ({n_mc_simulations:,} simulations)…")
+        mc_result = MonteCarloSimulator().simulate_monthly_pnl(
+            test_df=test_df_lbl.reset_index(drop=True),
+            signals_mask=signals_mask,
+            n_simulations=n_mc_simulations,
+            n_test_months=n_test_months,
+        )
+        print(
+            f"  Monthly P&L:  mean=${mc_result['mean']:,.0f}"
+            f"  median=${mc_result['median']:,.0f}"
+            f"  std=${mc_result['std']:,.0f}"
+            f"  win_rate={mc_result['win_rate']:.1%}"
+        )
+        print(
+            f"  Percentiles:  p5=${mc_result['percentiles']['p5']:,.0f}"
+            f"  p25=${mc_result['percentiles']['p25']:,.0f}"
+            f"  p75=${mc_result['percentiles']['p75']:,.0f}"
+            f"  p95=${mc_result['percentiles']['p95']:,.0f}"
+        )
+
+        # ── Save final JSON ───────────────────────────────────────────
+        serialisable_results = [
+            {k: v for k, v in r.items() if k != "signals_mask"}
+            for r in ensemble_result["results"]
+        ]
+        serialisable_best = (
+            {k: v for k, v in best_combo.items() if k != "signals_mask"}
+            if best_combo is not None
+            else None
+        )
+
+        final_results = {
+            "lgbm": {
+                "best_params": lgbm_result["best_params"],
+                "best_value":  lgbm_result["best_value"],
+            },
+            "rf": {
+                "best_params": rf_result["best_params"],
+                "best_value":  rf_result["best_value"],
+            },
+            "ensemble": {
+                "results": serialisable_results,
+                "best":    serialisable_best,
+            },
+            "monte_carlo": mc_result,
+        }
+
+        results_path = out_dir / "final_optimization_results.json"
+        results_path.write_text(_json.dumps(final_results, indent=2))
+
+        print()
+        print("=" * width)
+        print("  FINAL OPTIMIZATION COMPLETE")
+        print("=" * width)
+        print(f"\n  Results saved: {results_path}")
+        print(f"  Log saved:     {log_path}")
+        print("=" * width)
+
+        _sys.stdout = old_stdout
+        log_fh.close()
+
+    except Exception as exc:
+        import traceback
+        try:
+            _sys.stdout = old_stdout
+            log_fh.close()
+        except Exception:
+            pass
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)

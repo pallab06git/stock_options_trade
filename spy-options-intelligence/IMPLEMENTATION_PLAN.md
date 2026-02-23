@@ -959,6 +959,33 @@
 - Safe models for straddle strategy: **LightGBM** and **RandomForest**
 - Reports: `reports/leakage_audit/{lightgbm,xgboost,random_forest}_magnitude_audit.{log,json}`
 
+## Step 67: Final Optimization — Maximum Precision, Minimum Signals ✅ (2026-02-23)
+- [x] Create `src/ml/deep_hyperparameter_optimizer.py` — 3 classes
+  - `DeepHyperparameterOptimizer(X_train, y_train, X_val, y_val, val_days, target_signals_per_day=2.5, min_precision=0.98)`
+    - `_objective_score(y_proba)` — sweeps 0.85→0.999 (step 0.005); rewards 1–5 signals/day
+      - spd < 1 → precision * 0.5 | spd > 5 → precision * 0.7 | 1–5 → precision * (0.7 + 0.3 * vol_score)
+    - `optimize_lightgbm_precision(n_trials=200)` — 13-param Optuna TPE search; returns {best_params, best_value, study}
+    - `optimize_randomforest_precision(n_trials=200)` — 8-param Optuna TPE search (oob_score removed; max_samples gated on bootstrap=True)
+  - `EnsembleStrategy`
+    - _THRESHOLDS_AND = [0.85, 0.90, 0.95, 0.97, 0.99] | _OR = [0.90, 0.95, 0.97] | _AVG = [0.90, 0.95, 0.97, 0.99]
+    - `test_ensemble_combinations(lgbm_model, rf_model, X_test, y_test, test_df, n_test_days, target_signals_per_day=2.5)`
+    - Viable = spd in [target*0.5, target*2.0]; Best = max by (precision, avg_magnitude)
+    - Returns {results: List[Dict], best: Dict | None}
+  - `MonteCarloSimulator`
+    - `simulate_monthly_pnl(test_df, signals_mask, position_size_range=(10K,15K), n_simulations=1000, n_test_months=2.4)`
+    - rng = np.random.default_rng(42); position~Uniform, theta~Normal(-6%,2%), slippage~Normal(-1%,0.5%), fill=Bernoulli(0.95)
+    - TP: winner_pnl = position*(abs_max_move_pct+slippage)/100 | FP: loser_pnl = position*theta/100
+    - monthly_pnl = total_pnl / n_test_months; Returns {mean, median, std, percentiles:{p5,p25,p75,p95}, win_rate, n_signals, n_months}
+- [x] Add `final-optimization` CLI command to `src/ml/cli.py` (appended after line 6,557)
+  - Options: --features-dir (required, Path exists), --n-trials=200, --target-signals-per-day=2.5, --min-magnitude=20.0, --n-mc-simulations=1000, --output=reports/final_optimization
+  - 7-step pipeline with _Tee logging → final_optimization.log
+  - Saves: lgbm_deep_opt.pkl, rf_deep_opt.pkl, final_optimization_results.json
+  - JSON keys: lgbm, rf, ensemble, monte_carlo
+- [x] Create `run_final_optimization.py` — subprocess wrapper; default production settings
+  - N_TRIALS=200, TARGET_SIGNALS_PER_DAY=2.5, MIN_MAGNITUDE=20.0, N_MC_SIMULATIONS=1000
+- Tests: 1474 passed, 42 skipped (unchanged)
+- Run: `python run_final_optimization.py > logs/final_optimization.log 2>&1 &` (est. 4–8h)
+
 ## Future
 - [ ] Fresh out-of-sample validation of LightGBM/RF magnitude models on 2026 live data
 - [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
