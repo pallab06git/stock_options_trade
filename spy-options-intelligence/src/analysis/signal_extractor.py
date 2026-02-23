@@ -11,6 +11,9 @@ For each bar where AVG(LightGBM, RF) >= threshold, captures:
     - Plain-English explanation of why the signal fired
     - Actual outcome (magnitude, direction, P&L)
     - Simplified straddle P&L simulation
+    - Single-option P&L (if you bought just the signalled option)
+    - Direction analysis (did the option go UP or DOWN?)
+    - Cumulative P&L across all signals
 
 Column mapping
 --------------
@@ -80,7 +83,8 @@ def _ts_to_et(ts_ms: float) -> str:
 
 
 class SignalExtractor:
-    """Extract complete signal history with context and straddle simulation.
+    """Extract complete signal history with context, straddle simulation,
+    single-option P&L, and direction analysis.
 
     Parameters
     ----------
@@ -120,7 +124,8 @@ class SignalExtractor:
         Returns
         -------
         DataFrame with one row per signal and columns for metadata,
-        model outputs, explanation, and straddle simulation.
+        model outputs, explanation, straddle simulation,
+        single-option P&L, and cumulative P&L.
         """
         print("\n" + "=" * 80)
         print("  EXTRACTING ALL HISTORICAL SIGNALS")
@@ -185,11 +190,16 @@ class SignalExtractor:
 
             info["explanation"] = self._generate_explanation(info)
             info.update(self._simulate_straddle(info))
+            info.update(self._analyze_price_movement(row))
+            info.update(self._calculate_single_option_pnl(entry, info))
             signal_rows.append(info)
 
         signals_df = pd.DataFrame(signal_rows)
 
         if len(signals_df) > 0:
+            signals_df      = self._add_cumulative_pnl(signals_df)
+            direction_stats = self._analyze_direction_prediction(signals_df)
+
             tp_count  = int((signals_df["target_magnitude"] == 1).sum())
             precision = tp_count / len(signals_df)
             print(f"\n  ✅ Extracted {len(signals_df):,} signals")
@@ -199,8 +209,25 @@ class SignalExtractor:
             )
             print(f"     Avg confidence: {signals_df['avg_confidence'].mean():.1%}")
             print(f"     Precision:      {precision:.1%}  ({tp_count} TP / {len(signals_df)-tp_count} FP)")
+
+            print("\n" + "=" * 80)
+            print("  DIRECTION ANALYSIS")
+            print("=" * 80)
+            print(
+                f"\n  Options went UP:   {direction_stats['up_count']} "
+                f"({direction_stats['up_pct']:.1%})"
+            )
+            print(
+                f"  Options went DOWN: {direction_stats['down_count']} "
+                f"({direction_stats['down_pct']:.1%})"
+            )
+            print(f"\n  Single-option strategy (buy the signalled option):")
+            print(f"    Win rate:         {direction_stats['single_win_rate']:.1%}")
+            print(f"    Total profit:     ${direction_stats['single_total_profit']:,.0f}")
+            print(f"    Avg profit/trade: ${direction_stats['single_avg_profit']:,.0f}")
         else:
             print("  No signals found.")
+            tp_count = 0
 
         logger.info(
             "SignalExtractor: %d signals  precision=%.3f  threshold=%.2f",
@@ -321,4 +348,137 @@ class SignalExtractor:
             "straddle_profit":      straddle_profit,
             "straddle_return_pct":  straddle_return,
             "straddle_winner":      winner_side,
+        }
+
+    def _analyze_price_movement(self, row) -> Dict[str, Any]:
+        """Analyze what actually happened to the option price.
+
+        Uses pre-computed labels from MagnitudeLabeler (max_gain_120m,
+        min_loss_120m, move_direction, time_to_max_min) to determine
+        direction and magnitude of the actual move, avoiding the complexity
+        of forward-scanning a multi-ticker interleaved dataframe.
+        """
+        entry_price     = float(row.get("close", 0.0))
+        max_gain_pct    = float(row.get("max_gain_120m", float("nan")))
+        min_loss_pct    = float(row.get("min_loss_120m", float("nan")))  # negative value
+        move_direction  = str(row.get("move_direction", "unknown")).lower()
+        time_to_max_min = row.get("time_to_max_min", float("nan"))
+
+        _nan = float("nan")
+
+        if entry_price <= 0 or np.isnan(max_gain_pct):
+            return {
+                "price_direction":  "unknown",
+                "price_change_pct": _nan,
+                "exit_price":       entry_price,
+                "max_price":        entry_price,
+                "min_price":        entry_price,
+                "max_gain_pct":     _nan,
+                "max_loss_pct":     _nan,
+                "minutes_to_max":   0,
+                "minutes_to_min":   0,
+                "time_to_exit":     0,
+            }
+
+        max_price = entry_price * (1.0 + max_gain_pct / 100.0)
+        min_price = (
+            entry_price * (1.0 + min_loss_pct / 100.0)
+            if not np.isnan(min_loss_pct)
+            else entry_price
+        )
+
+        t = (
+            int(time_to_max_min)
+            if not (isinstance(time_to_max_min, float) and np.isnan(time_to_max_min))
+            else 0
+        )
+
+        if move_direction == "up":
+            price_direction  = "UP"
+            price_change_pct = max_gain_pct
+            exit_price       = max_price
+        elif move_direction == "down":
+            price_direction  = "DOWN"
+            price_change_pct = float(min_loss_pct) if not np.isnan(min_loss_pct) else -max_gain_pct
+            exit_price       = min_price
+        else:
+            price_direction  = "FLAT"
+            price_change_pct = 0.0
+            exit_price       = entry_price
+
+        return {
+            "price_direction":  price_direction,
+            "price_change_pct": price_change_pct,
+            "exit_price":       exit_price,
+            "max_price":        max_price,
+            "min_price":        min_price,
+            "max_gain_pct":     max_gain_pct,
+            "max_loss_pct":     float(min_loss_pct) if not np.isnan(min_loss_pct) else _nan,
+            "minutes_to_max":   t,
+            "minutes_to_min":   t,
+            "time_to_exit":     t,
+        }
+
+    def _calculate_single_option_pnl(
+        self, entry_price: float, movement_analysis: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Calculate P&L if you bought JUST the signalled option (1 contract = 100 shares)."""
+        exit_price       = movement_analysis.get("exit_price", entry_price)
+        price_change_pct = movement_analysis.get("price_change_pct", float("nan"))
+
+        if entry_price <= 0 or np.isnan(entry_price):
+            return {
+                "single_option_entry_cost":   float("nan"),
+                "single_option_exit_value":   float("nan"),
+                "single_option_pnl_dollars":  float("nan"),
+                "single_option_pnl_pct":      float("nan"),
+                "single_option_profitable":   False,
+            }
+
+        shares      = 100
+        entry_cost  = entry_price * shares
+        exit_value  = float(exit_price) * shares
+        pnl_dollars = exit_value - entry_cost
+        is_profit   = pnl_dollars > 0
+
+        return {
+            "single_option_entry_cost":  entry_cost,
+            "single_option_exit_value":  exit_value,
+            "single_option_pnl_dollars": pnl_dollars,
+            "single_option_pnl_pct":     float(price_change_pct),
+            "single_option_profitable":  is_profit,
+        }
+
+    def _add_cumulative_pnl(self, signals_df: pd.DataFrame) -> pd.DataFrame:
+        """Sort by date/timestamp and compute cumulative single-option P&L."""
+        sort_cols = ["date"]
+        if "timestamp_ms" in signals_df.columns:
+            sort_cols.append("timestamp_ms")
+        signals_df = signals_df.sort_values(sort_cols).reset_index(drop=True)
+        signals_df["cumulative_pnl"] = (
+            signals_df["single_option_pnl_dollars"]
+            .fillna(0.0)
+            .cumsum()
+        )
+        return signals_df
+
+    def _analyze_direction_prediction(self, signals_df: pd.DataFrame) -> Dict[str, Any]:
+        """Analyse whether the model is predicting direction or just magnitude."""
+        up_count   = int((signals_df["price_direction"] == "UP").sum())
+        down_count = int((signals_df["price_direction"] == "DOWN").sum())
+        total      = len(signals_df)
+
+        profitable_trades = int(signals_df["single_option_profitable"].sum())
+        win_rate          = profitable_trades / total if total > 0 else 0.0
+        total_profit      = float(signals_df["single_option_pnl_dollars"].sum())
+        avg_profit        = float(signals_df["single_option_pnl_dollars"].mean()) if total > 0 else 0.0
+
+        return {
+            "up_count":            up_count,
+            "down_count":          down_count,
+            "up_pct":              up_count / total if total > 0 else 0.0,
+            "down_pct":            down_count / total if total > 0 else 0.0,
+            "single_win_rate":     win_rate,
+            "single_total_profit": total_profit,
+            "single_avg_profit":   avg_profit,
         }
