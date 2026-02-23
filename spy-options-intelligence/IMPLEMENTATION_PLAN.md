@@ -826,12 +826,75 @@
   - TestMainCliIntegration ×1: full-comparison accessible from main CLI
 - [x] Full test suite: 1329 passing, 35 skipped
 
+## Overnight Pipeline Run (2026-02-21) ✅
+- [x] Install optuna, lightgbm, plotly via pip
+- [x] `run_overnight.py` executed: 69m 12s total
+- [x] XGBoost Optuna (50 trials) → best CV precision=0.5146 → `models/xgboost_opt.pkl`
+- [x] LightGBM Optuna (50 trials) → best CV precision=0.5762 → `models/lightgbm_opt.pkl`
+- [x] full-comparison results in `data/reports/model_comparison/`
+- Findings:
+  - xgboost_v2 (manually-tuned) best: 169 signals @ 0.70 threshold, 65.1% win rate, +$314,508
+  - xgboost_opt: 6,366 signals @ 0.70 threshold, 29.5% win rate, -$504,158 (Optuna CV metric ≠ P&L)
+  - lightgbm_opt: 0 signals at all thresholds (proba max=0.5654; fix: calibration or lower threshold)
+- Dashboard ready: `streamlit run src/ml/dashboard.py -- --results-dir data/reports/model_comparison`
+
+## Step 52: Leakage Detection + Dashboard Polish (Steps 50–51 continued) ✅
+- [x] `src/ml/dashboard.py` — Trade Explorer: green/red row coloring + 2-decimal float formatting
+- [x] `src/ml/leakage_detector.py` — LeakageDetector with 6 tests; `detect-leakage` CLI command
+- [x] `tests/unit/test_leakage_detector.py` — 26 unit tests
+- [x] `src/processing/ml_feature_engineer.py` — removed `opt_vol_pct_cumday` (lookahead feature)
+- [x] `src/ml/train_xgboost.py` — added `opt_vol_pct_cumday` to `_NON_FEATURE_COLS` safety net
+- [x] Retrained `models/xgboost_v3_clean.pkl` (65 features, no lookahead)
+- [x] Full-comparison v2 vs v3_clean confirmed: 100% win rate was entirely due to lookahead
+
+## Step 53: Sustained Movement Prediction Experiment ✅
+- [x] Create `src/processing/sustained_movement_labeler.py`
+  - `generate_sustained_labels(df, confirmation_minutes=15, sustain_minutes=5)` → 4 columns
+    - Algorithm: at bar T, check bar T+15 min; if close > entry, count consecutive bars above entry;
+      if ≥ sustain_minutes → target_sustained = 1
+  - `classify_magnitude(gain_pct)` → one of 6 buckets: below_zero, 0-1%, 1-5%, 5-10%, 10-20%, 20%+
+  - `SustainedMovementLabeler(config)` — config-driven wrapper: `label(df)`, `label_for_file(path)`,
+    `validate(df)` (returns stats + magnitude breakdown)
+  - Output cols: `target_sustained`, `gain_pct_at_confirmation`, `magnitude_bucket`,
+    `sustain_minutes_actual`
+- [x] Create `src/ml/multi_model_trainer.py`
+  - `MultiModelTrainer(n_trials=50, cv_splits=3, operating_thresholds, min_signals=10)`
+  - `train(df, target_col, feature_cols)` → dict of 3 artifacts (xgboost, lightgbm, random_forest)
+    - Chronological 80/20 split → undersample majority in train → Optuna search → retrain best
+    - Optuna objective: avg precision across operating_thresholds (0.70–0.90), min_signals filter
+  - `save_artifacts(artifacts, output_dir)` → Dict[name → Path]
+  - Artifacts compatible with `ModelComparator.add_model()` and `full-comparison` CLI
+- [x] Create `src/ml/sustained_movement_evaluator.py`
+  - `SustainedMovementEvaluator(thresholds, target_col)`
+  - `evaluate(artifacts, test_df)` → nested results dict:
+      models × threshold_results (precision/recall/F1/TP/FP/FN) +
+      precision_by_magnitude (per bucket × threshold) + model_agreement stats
+  - `generate_report(results, comparison_threshold)` → pd.DataFrame (one row per model)
+  - `save_results(results, report_df, output_dir)` → writes 4 files:
+      full_results.json, comparison_report.csv, precision_by_magnitude.json, model_agreement.json
+- [x] Add `sustained-movement-experiment` CLI command to `src/ml/cli.py`
+  - 5-step pipeline (load → label → split → train → evaluate)
+  - Options: --confirmation-minutes, --sustain-minutes, --n-trials, --cv-splits, --thresholds
+  - Prints magnitude breakdown, per-model results table, precision-by-magnitude table, model agreement
+  - Saves model .pkl files + evaluator reports to --output dir
+- [x] Create `tests/unit/test_sustained_movement.py` — 38 tests:
+  - TestSustainedMovementLabeler ×12: positive/negative labels, NaN/zero handling, empty df,
+    missing cols, per-ticker isolation, gain_pct, config wrapper, validate()
+  - TestClassifyMagnitude ×7: all six buckets + NaN
+  - TestMultiModelTrainer ×8: error cases, three-model keys, artifact keys, pkl save
+  - TestSustainedMovementEvaluator ×11: error cases, evaluate() structure,
+    threshold coverage, precision range, report DataFrame, agreement, magnitude
+- [x] Full test suite: 1461 passing + 42 skipped (LSTM when torch absent)
+
 ## Future
+- [ ] Run sustained-movement-experiment on full year data
+  - Command: `python -m src.cli ml sustained-movement-experiment --start-date 2025-03-03 --end-date 2026-02-19 --n-trials 30`
 - [ ] Upgrade Massive plan for full 12-month options history (Apr–Nov 2025 gap)
 - [ ] VIX data integration (upgrade massive.com plan)
 - [ ] Per-day interleaved `download-day` command (SPY open → options, parallel within rate-limit window)
 - [ ] LSTM model training
 - [ ] MLflow integration
+- [ ] LightGBM calibration fix (CalibratedClassifierCV or threshold lowered to ~0.53)
 
 ---
-**Total tests: 1305 passing + 7 live (skipped outside market hours) | Last updated: 2026-02-20**
+**Total tests: 1461 passing + 42 skipped (LSTM when torch absent) | Last updated: 2026-02-22**

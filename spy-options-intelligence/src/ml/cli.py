@@ -2037,3 +2037,350 @@ def detect_leakage(model_path, features_dir, test_size, output):
 
     if not safe:
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# sustained-movement-experiment
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("sustained-movement-experiment")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Directory containing *_features.csv files. Defaults to config value.",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Earliest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Latest feature date to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--confirmation-minutes",
+    default=15,
+    type=int,
+    show_default=True,
+    help="Minutes after entry to check the confirmation bar.",
+)
+@click.option(
+    "--sustain-minutes",
+    default=5,
+    type=int,
+    show_default=True,
+    help="Min consecutive bars above entry price at confirmation for a positive label.",
+)
+@click.option(
+    "--n-trials",
+    default=30,
+    type=int,
+    show_default=True,
+    help="Optuna trials per model type.",
+)
+@click.option(
+    "--cv-splits",
+    default=3,
+    type=int,
+    show_default=True,
+    help="TimeSeriesSplit folds inside each Optuna trial.",
+)
+@click.option(
+    "--thresholds",
+    default="0.50,0.60,0.70,0.80",
+    show_default=True,
+    help="Comma-separated evaluation thresholds.",
+)
+@click.option(
+    "--output",
+    default=None,
+    help="Output directory for models and reports. "
+    "Defaults to data/reports/sustained_movement.",
+)
+def sustained_movement_experiment(
+    config_dir,
+    features_dir,
+    start_date,
+    end_date,
+    confirmation_minutes,
+    sustain_minutes,
+    n_trials,
+    cv_splits,
+    thresholds,
+    output,
+):
+    """Sustained-movement prediction experiment with three model types.
+
+    This command:
+
+    \b
+    1. Loads feature CSVs from ``--features-dir`` (or config default).
+    2. Applies SustainedMovementLabeler (confirmation_minutes / sustain_minutes).
+    3. Shows label distribution and magnitude breakdown.
+    4. Chronologically splits data (70/30 train/test).
+    5. Trains XGBoost + LightGBM + RandomForest with Optuna optimisation.
+    6. Evaluates all models with SustainedMovementEvaluator.
+    7. Saves models, comparison report, and precision-by-magnitude breakdown.
+
+    NOTE: Trains from scratch — may take several minutes depending on
+    --n-trials.  Use --n-trials 5 for a quick smoke-test run.
+
+    \b
+    Example:
+        python -m src.cli ml sustained-movement-experiment \\
+            --start-date 2025-03-03 --end-date 2026-02-19 \\
+            --n-trials 30 --confirmation-minutes 15 --sustain-minutes 5
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import numpy as _np
+    import pandas as _pd
+
+    from src.ml.multi_model_trainer import MultiModelTrainer
+    from src.ml.sustained_movement_evaluator import SustainedMovementEvaluator
+    from src.ml.train_xgboost import load_features, _NON_FEATURE_COLS
+    from src.processing.sustained_movement_labeler import (
+        SustainedMovementLabeler,
+        MAGNITUDE_BUCKETS,
+    )
+
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        out_dir = _Path(output) if output else _Path("data/reports/sustained_movement")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        models_dir = out_dir / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        # ── Parse thresholds ───────────────────────────────────────────
+        try:
+            threshold_list = [float(t.strip()) for t in thresholds.split(",")]
+        except ValueError:
+            click.echo(
+                f"Error: --thresholds must be comma-separated floats, "
+                f"got: {thresholds!r}",
+                err=True,
+            )
+            sys.exit(1)
+
+        click.echo("\n" + "=" * 70)
+        click.echo("  SUSTAINED MOVEMENT PREDICTION EXPERIMENT")
+        click.echo("=" * 70)
+        click.echo(f"  Features dir:         {feat_dir}")
+        click.echo(f"  Date range:           {start_date or 'all'} → {end_date or 'all'}")
+        click.echo(f"  Confirmation window:  {confirmation_minutes} min")
+        click.echo(f"  Sustain requirement:  {sustain_minutes} consecutive min above entry")
+        click.echo(f"  Optuna trials/model:  {n_trials}")
+        click.echo(f"  CV splits:            {cv_splits}")
+        click.echo(f"  Eval thresholds:      {', '.join(f'{t:.0%}' for t in threshold_list)}")
+        click.echo(f"  Output dir:           {out_dir}")
+        click.echo("=" * 70)
+
+        # ── Step 1: Load feature CSVs ──────────────────────────────────
+        click.echo("\n[1/5] Loading feature CSVs…")
+        df = load_features(feat_dir, start_date, end_date)
+        if df.empty:
+            click.echo(
+                f"Error: no feature data found in {feat_dir} for "
+                f"{start_date} → {end_date}",
+                err=True,
+            )
+            sys.exit(1)
+        n_dates = df["date"].nunique() if "date" in df.columns else "?"
+        click.echo(f"  Loaded {len(df):,} rows across {n_dates} dates")
+
+        # ── Step 2: Apply SustainedMovementLabeler ─────────────────────
+        click.echo(
+            f"\n[2/5] Applying SustainedMovementLabeler "
+            f"(conf={confirmation_minutes}min, sustain={sustain_minutes}min)…"
+        )
+        labeler_cfg = {
+            "sustained_movement": {
+                "confirmation_minutes": confirmation_minutes,
+                "sustain_minutes": sustain_minutes,
+            }
+        }
+        labeler = SustainedMovementLabeler(labeler_cfg)
+        df = labeler.label(df)
+        stats = labeler.validate(df)
+
+        click.echo(f"  Total rows:      {stats['n_total']:,}")
+        click.echo(f"  Positive labels: {stats['n_positive']:,}  ({stats['positive_rate']:.2%})")
+        click.echo(f"  Coverage:        {stats['coverage_pct']:.1f}% rows have confirmation bar")
+        click.echo("\n  Magnitude breakdown (at confirmation bar):")
+        for bucket in MAGNITUDE_BUCKETS:
+            count = stats["magnitude_breakdown"].get(bucket, 0)
+            pct   = count / max(stats["n_total"], 1) * 100
+            bar   = "█" * max(1, int(pct / 2))
+            click.echo(f"    {bucket:<12}: {count:>6,}  ({pct:5.1f}%)  {bar}")
+
+        if stats["n_positive"] < 20:
+            click.echo(
+                "\n  WARNING: Very few positive labels. "
+                "Consider lowering --confirmation-minutes or --sustain-minutes.",
+                err=True,
+            )
+
+        # ── Step 3: Chronological train/test split ─────────────────────
+        click.echo("\n[3/5] Splitting data (70% train / 30% test, chronological)…")
+        n_total = len(df)
+        split_idx = int(n_total * 0.70)
+        train_df = df.iloc[:split_idx].reset_index(drop=True)
+        test_df  = df.iloc[split_idx:].reset_index(drop=True)
+
+        click.echo(
+            f"  Train: {len(train_df):,} rows  "
+            f"({int(train_df['target_sustained'].sum())} positives)"
+        )
+        click.echo(
+            f"  Test:  {len(test_df):,} rows  "
+            f"({int(test_df['target_sustained'].sum())} positives)"
+        )
+
+        # Determine feature columns
+        feature_cols = [
+            c for c in df.columns
+            if c not in _NON_FEATURE_COLS
+            and c not in {
+                "target_sustained", "gain_pct_at_confirmation",
+                "magnitude_bucket", "sustain_minutes_actual",
+            }
+        ]
+        feature_cols = sorted(feature_cols)
+        click.echo(f"  Feature columns: {len(feature_cols)}")
+
+        # ── Step 4: Train models with Optuna ───────────────────────────
+        click.echo(
+            f"\n[4/5] Training XGBoost + LightGBM + RandomForest "
+            f"({n_trials} Optuna trials each)…"
+        )
+        click.echo("  (This may take several minutes)")
+
+        trainer = MultiModelTrainer(
+            n_trials=n_trials,
+            cv_splits=cv_splits,
+        )
+        artifacts = trainer.train(
+            df=train_df,
+            target_col="target_sustained",
+            feature_cols=feature_cols,
+        )
+
+        click.echo("\n  Training complete:")
+        for model_name, artifact in artifacts.items():
+            opt_score = artifact.get("optimization_score", 0.0)
+            val_prec  = artifact.get("val_precision_at_0_70", 0.0)
+            click.echo(
+                f"    {model_name:<15}: "
+                f"Optuna score={opt_score:.4f}  "
+                f"val_precision@0.70={val_prec:.4f}"
+            )
+
+        # Save model artifacts
+        saved_models = trainer.save_artifacts(artifacts, models_dir)
+        click.echo(f"\n  Models saved to: {models_dir}/")
+        for name, path in saved_models.items():
+            size_kb = path.stat().st_size / 1024
+            click.echo(f"    {path.name:<40}  {size_kb:>6.1f} KB")
+
+        # ── Step 5: Evaluate ───────────────────────────────────────────
+        click.echo(f"\n[5/5] Evaluating models on test set ({len(test_df):,} rows)…")
+
+        evaluator = SustainedMovementEvaluator(
+            thresholds=threshold_list,
+            target_col="target_sustained",
+        )
+        eval_results = evaluator.evaluate(artifacts, test_df)
+
+        # Print per-model summary at each threshold
+        click.echo(
+            f"\n  {'Model':<18}  {'Threshold':>10}  {'Signals':>8}  "
+            f"{'Precision':>10}  {'Recall':>8}  {'F1':>6}"
+        )
+        click.echo("  " + "-" * 68)
+        for model_name, mdata in eval_results["models"].items():
+            for t, r in sorted(mdata["threshold_results"].items()):
+                click.echo(
+                    f"  {model_name:<18}  {t:>10.0%}  "
+                    f"{r['n_signals']:>8}  "
+                    f"{r['precision']:>10.3f}  "
+                    f"{r['recall']:>8.3f}  "
+                    f"{r['f1']:>6.3f}"
+                )
+
+        # Comparison report at primary threshold
+        primary_t = threshold_list[min(2, len(threshold_list) - 1)]
+        report_df = evaluator.generate_report(eval_results, comparison_threshold=primary_t)
+        if not report_df.empty:
+            click.echo(f"\n  Side-by-side at {primary_t:.0%} threshold:")
+            click.echo("  " + report_df.to_string(index=False).replace("\n", "\n  "))
+
+        # Precision-by-magnitude (at primary threshold)
+        click.echo(f"\n  Precision by magnitude bucket (threshold={primary_t:.0%}):")
+        for model_name, mdata in eval_results["models"].items():
+            pbm = mdata.get("precision_by_magnitude", {})
+            by_t = pbm.get("by_threshold", {})
+            click.echo(f"\n    {model_name}:")
+            click.echo(
+                f"      {'Bucket':<12}  {'Signals':>8}  {'TP':>6}  {'Precision':>10}"
+            )
+            click.echo("      " + "-" * 42)
+            bucket_data = by_t.get(primary_t, {})
+            for bucket in MAGNITUDE_BUCKETS:
+                bd = bucket_data.get(bucket, {})
+                n_sig = bd.get("n_signals", 0)
+                n_tp  = bd.get("n_tp", 0)
+                prec  = bd.get("precision", 0.0)
+                click.echo(
+                    f"      {bucket:<12}  {n_sig:>8}  {n_tp:>6}  {prec:>10.3f}"
+                )
+
+        # Model agreement
+        if len(artifacts) >= 2:
+            click.echo(f"\n  Model agreement at {primary_t:.0%} threshold:")
+            agr_t = eval_results["model_agreement"].get(primary_t, {})
+            click.echo(
+                f"    Unique signals:       {agr_t.get('total_unique_signals', 0)}"
+            )
+            click.echo(
+                f"    All models agree:     {agr_t.get('all_agree_count', 0)}"
+            )
+            click.echo(
+                f"    Majority agree:       {agr_t.get('majority_agree_count', 0)}"
+            )
+            for k, v in sorted(agr_t.get("agreement_breakdown", {}).items()):
+                click.echo(f"    {k.replace('_', ' ')}: {v}")
+
+        # Save all results
+        saved_files = evaluator.save_results(eval_results, report_df, out_dir)
+        click.echo(f"\n  Results saved to: {out_dir}/")
+        for stem, path in saved_files.items():
+            size_kb = path.stat().st_size / 1024
+            click.echo(f"    {path.name:<45}  {size_kb:>6.1f} KB")
+
+        click.echo("\n" + "=" * 70)
+        click.echo("  EXPERIMENT COMPLETE")
+        click.echo("=" * 70)
+        click.echo(
+            f"\n  To explore results with the ML dashboard:\n"
+            f"    streamlit run src/ml/dashboard.py -- --results-dir {out_dir}"
+        )
+
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
