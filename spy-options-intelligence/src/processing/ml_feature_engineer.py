@@ -394,6 +394,56 @@ class MLFeatureEngineer:
         vwap_safe = df["spy_vwap"].replace(0, np.nan)
         df["spy_vwap_dist_pct"] = (close - df["spy_vwap"]) / vwap_safe * 100
 
+        # --- SPY 20-lag average-price delta (momentum profile) ---
+        # Each feature = current OHLC midpoint minus the midpoint N minutes ago.
+        # Captures the "shape" of the last 20-minute move at every bar:
+        #   - values near 0 across all lags → consolidation / flat price
+        #   - consistent positive sign + growing magnitude → uptrend
+        #   - sign flip mid-sequence → momentum exhaustion / reversal
+        # Bars with insufficient history (minutes_since_open < lag) are
+        # filled with 0.0 so the model sees a neutral signal rather than NaN.
+        spy_avg = (
+            df["spy_open"] + df["spy_high"] + df["spy_low"] + df["spy_close"]
+        ) / 4
+        for lag in range(1, 21):
+            delta = spy_avg - spy_avg.shift(lag)
+            df[f"spy_avg_vs_{lag}m_ago"] = delta.where(
+                df["minutes_since_open"] >= lag, 0.0
+            )
+
+        # --- SPY consolidation range and breakout features ---
+        # spy_consol_range_Xb: max(spy_high) - min(spy_low) over last X bars (USD).
+        #   Low value → SPY was tight/consolidating; high value → SPY was moving.
+        # spy_breakout_Xb: signed distance from the X-bar rolling range.
+        #   > 0 → close above the rolling high (upward breakout magnitude in USD)
+        #   < 0 → close below the rolling low  (downward breakout magnitude in USD)
+        #   = 0 → close inside the range (no breakout)
+        # spy_bars_since_breakout: bars elapsed since the last 5b-range breakout.
+        #   0 = this bar is a breakout; capped at 20 (no recent breakout).
+        for window in (5, 10):
+            roll_hi = df["spy_high"].rolling(window, min_periods=window).max()
+            roll_lo = df["spy_low"].rolling(window, min_periods=window).min()
+            df[f"spy_consol_range_{window}b"] = (roll_hi - roll_lo).where(
+                df["minutes_since_open"] >= window, 0.0
+            )
+            above = (close - roll_hi).clip(lower=0)   # upward breakout magnitude
+            below = (roll_lo - close).clip(lower=0)   # downward breakout magnitude
+            df[f"spy_breakout_{window}b"] = (above - below).where(
+                df["minutes_since_open"] >= window, 0.0
+            )
+
+        # Bars since last breakout out of the 5-bar range (0 = current bar breaks out)
+        is_bo = (df["spy_breakout_5b"] != 0).values
+        bars_since = np.empty(len(df), dtype=np.float32)
+        count = 20
+        for i, v in enumerate(is_bo):
+            if v:
+                count = 0
+            else:
+                count = min(count + 1, 20)
+            bars_since[i] = count
+        df["spy_bars_since_breakout"] = bars_since
+
         # --- Fill NaN from insufficient warm-up history ---
         # Technical indicator NaNs at start of day are filled with the
         # first computable value (bfill). This avoids zero-padding which
@@ -403,6 +453,7 @@ class MLFeatureEngineer:
             if c.startswith("spy_rsi") or c.startswith("spy_ema")
             or c.startswith("spy_macd") or c.startswith("spy_bb")
             or c.startswith("spy_vol_std") or c.startswith("spy_hl")
+            or c.startswith("spy_avg_vs_")
         ]
         df[ta_cols] = df[ta_cols].ffill().bfill()
 
@@ -603,6 +654,15 @@ class MLFeatureEngineer:
         spy_tx = df.get("spy_transactions", pd.Series(np.nan, index=df.index))
         spy_tx_safe = spy_tx.replace(0, np.nan)
         df["transactions_ratio"] = opt_tx / spy_tx_safe
+
+        # --- Direction-aligned SPY breakout (cross-asset) ---
+        # spy_breakout_Xb > 0 = SPY broke above X-bar range (bullish)
+        # For CALLs (contract_type=1): bullish breakout is good (+1 direction)
+        # For PUTs  (contract_type=0): bullish breakout is bad  (-1 direction)
+        # This makes the signal monotonic: positive = aligned, negative = opposed
+        _direction = np.where(df["contract_type"] == 1, 1.0, -1.0)
+        df["spy_aligned_breakout_5b"] = df["spy_breakout_5b"].fillna(0) * _direction
+        df["spy_aligned_breakout_10b"] = df["spy_breakout_10b"].fillna(0) * _direction
 
         # --- Option bar counter (sequential within this contract's day) ---
         df["opt_bar_count"] = range(1, len(df) + 1)

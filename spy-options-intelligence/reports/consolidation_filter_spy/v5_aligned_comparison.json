@@ -1,0 +1,127 @@
+{
+  "v3_clean": {
+    "thresholds": {
+      "0.5": {
+        "signals": 8349,
+        "precision": 0.5395
+      },
+      "0.55": {
+        "signals": 4043,
+        "precision": 0.5491
+      },
+      "0.58": {
+        "signals": 2091,
+        "precision": 0.539
+      },
+      "0.6": {
+        "signals": 1264,
+        "precision": 0.5324
+      },
+      "0.62": {
+        "signals": 755,
+        "precision": 0.5073
+      },
+      "0.65": {
+        "signals": 271,
+        "precision": 0.5461
+      },
+      "0.7": {
+        "signals": 34,
+        "precision": 0.8824
+      }
+    },
+    "feature_count": 65
+  },
+  "v4_consol": {
+    "thresholds": {
+      "0.5": {
+        "signals": 7817,
+        "precision": 0.539
+      },
+      "0.55": {
+        "signals": 3656,
+        "precision": 0.5583
+      },
+      "0.58": {
+        "signals": 1911,
+        "precision": 0.572
+      },
+      "0.6": {
+        "signals": 1053,
+        "precision": 0.5764
+      },
+      "0.62": {
+        "signals": 464,
+        "precision": 0.5711
+      },
+      "0.65": {
+        "signals": 121,
+        "precision": 0.4793
+      },
+      "0.7": {
+        "signals": 6,
+        "precision": 0.8333
+      }
+    },
+    "feature_count": 118
+  },
+  "v5_aligned": {
+    "thresholds": {
+      "0.5": {
+        "signals": 6569,
+        "precision": 0.538
+      },
+      "0.55": {
+        "signals": 3413,
+        "precision": 0.5374
+      },
+      "0.58": {
+        "signals": 2049,
+        "precision": 0.5339
+      },
+      "0.6": {
+        "signals": 1345,
+        "precision": 0.5599
+      },
+      "0.62": {
+        "signals": 841,
+        "precision": 0.5969
+      },
+      "0.65": {
+        "signals": 360,
+        "precision": 0.6167
+      },
+      "0.7": {
+        "signals": 53,
+        "precision": 0.7358
+      }
+    },
+    "feature_count": 120,
+    "top_n_per_day": {
+      "1": {
+        "precision": 0.6571,
+        "total_signals": 35
+      },
+      "2": {
+        "precision": 0.6,
+        "total_signals": 70
+      },
+      "3": {
+        "precision": 0.5905,
+        "total_signals": 105
+      },
+      "5": {
+        "precision": 0.5486,
+        "total_signals": 175
+      },
+      "10": {
+        "precision": 0.5371,
+        "total_signals": 350
+      },
+      "20": {
+        "precision": 0.5114,
+        "total_signals": 700
+      }
+    }
+  }
+}
