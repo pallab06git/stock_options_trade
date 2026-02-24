@@ -165,6 +165,26 @@ signal_pipeline:
   eod_close_minutes_before:    10   # force-close N minutes before close
   max_hold_minutes:           120   # maximum holding period
   fee_per_trade:              4.0   # round-trip commission per trade
+  min_model_agreement:          2   # require N/3 base models scoring > 0.5
+  trailing_stop_pct:         15.0   # trailing stop: exit when price drops N% from peak
+  put_min_spy_return_15m:   -0.02   # PUTs require SPY 15m return <= this (stronger filter)
+
+  # Winner-side: profit-threshold adaptive exit (Step 83b)
+  profit_switch_pct:         15.0   # switch from model exit to trailing stop above this gain %
+  min_momentum_gain_pct:      5.0   # skip momentum exhaustion below this gain (avoids micro-winners)
+
+  # Loser-side: adaptive loss cutting (Step 83b)
+  fast_fail_pct:            -99.0   # DISABLED: 71% false positive rate, net negative impact
+  fast_fail_minutes:            3   # time window for fast-fail
+  put_stop_loss_pct:         -8.0   # tighter stop for PUTs (PUTs die faster/harder than CALLs)
+
+# ---------------------------------------------------------------------------
+# Walk-Forward Validation  (src/ml/walk_forward_trainer.py)
+# ---------------------------------------------------------------------------
+walk_forward:
+  min_train_months:             6   # minimum months for first training window
+  entry_threshold:           0.65   # entry probability threshold for WF
+  min_model_agreement:          2   # require N/3 base models scoring > 0.5
 
 # ---------------------------------------------------------------------------
 # Output paths  (shared across ML modules)

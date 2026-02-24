@@ -7726,3 +7726,118 @@ def build_trade_dashboard(report_path, output):
         click.echo(f"Error: {exc}", err=True)
         click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# walk-forward  (Step 81)
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("walk-forward")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Override feature_engineering.features_dir.",
+)
+@click.option(
+    "--raw-options-dir",
+    default="data/raw/options/minute",
+    show_default=True,
+    help="Directory with raw option Parquet files.",
+)
+@click.option(
+    "--min-train-months",
+    default=6,
+    type=int,
+    show_default=True,
+    help="Minimum training window in months.",
+)
+@click.option(
+    "--entry-threshold",
+    default=None,
+    type=float,
+    help="Entry probability threshold (overrides config).",
+)
+@click.option(
+    "--min-agreement",
+    default=2,
+    type=int,
+    show_default=True,
+    help="Minimum base-model agreement (1-3).",
+)
+@click.option(
+    "--output",
+    default="reports/walk_forward",
+    show_default=True,
+    help="Output directory for results.",
+)
+def walk_forward(
+    config_dir, features_dir, raw_options_dir, min_train_months,
+    entry_threshold, min_agreement, output
+):
+    """Run walk-forward validation with expanding-window retraining.
+
+    Retrains the stacked ensemble and exit model at each fold, then
+    simulates real-bar trades on the next month (true out-of-sample).
+    Includes model-agreement filter to reject signals during regime shifts.
+    """
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+
+        # Inject agreement threshold
+        config.setdefault("signal_pipeline", {})
+        config["signal_pipeline"]["min_model_agreement"] = min_agreement
+
+        from src.ml.walk_forward_trainer import WalkForwardTrainer
+
+        trainer = WalkForwardTrainer(config)
+        result = trainer.run(
+            features_dir=feat_dir,
+            raw_options_dir=raw_options_dir,
+            min_train_months=min_train_months,
+            output_dir=output,
+            entry_threshold=entry_threshold,
+        )
+
+        click.echo(f"\n{'='*60}")
+        click.echo("WALK-FORWARD RESULTS (True Out-of-Sample)")
+        click.echo(f"{'='*60}")
+        click.echo(f"Folds:           {result['n_folds']}")
+        click.echo(f"Total trades:    {result['total_trades']}")
+        click.echo(f"Win rate:        {result['win_rate']:.1f}%")
+        click.echo(f"Total P&L:       ${result['total_pnl']:+,.0f}")
+        click.echo(f"Avg P&L/trade:   ${result['avg_pnl_per_trade']:+,.0f}")
+        click.echo(f"Entry threshold: {result['entry_threshold']}")
+        click.echo(f"Min agreement:   {result['min_agreement']}")
+
+        click.echo(f"\n--- Monthly P&L (Out-of-Sample) ---")
+        for month, pnl in result.get("monthly_pnl", {}).items():
+            click.echo(f"  {month}: ${pnl:+,.0f}")
+
+        click.echo(f"\n--- Per-Fold Detail ---")
+        for fold in result.get("folds", []):
+            click.echo(
+                f"  Fold {fold['fold']} ({fold['test_month']}): "
+                f"{fold['n_trades']} trades, {fold['win_rate']:.0f}% win, "
+                f"${fold['net_pnl']:+,.0f}"
+            )
+
+        click.echo(f"\nResults saved to: {output}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
