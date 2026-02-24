@@ -129,6 +129,11 @@ stacked_ensemble:
   contamination:    0.05    # Isolation Forest anomaly rate
   discount_factor:  0.5     # probability multiplier for anomalous bars
   random_state:     42
+  # NOTE (Step 84): Optuna tuning (150 trials) improved val-set precision@top-3
+  # from 0.64 → 0.79 but REDUCED walk-forward P&L from +$68K → +$35K.
+  # Cause: 20% val window (Nov-Dec 2025 only) → overfit to that 2-month period.
+  # Original defaults are better calibrated across the full Sep 2025 – Feb 2026 OOS range.
+  # Proper fix: use 3-fold temporal CV in Optuna objective (not a single val window).
 
 # ---------------------------------------------------------------------------
 # Exit Model  (src/ml/exit_signal_model.py)

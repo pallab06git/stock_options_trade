@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-02-24T01:00:32Z",
+  "n_trials_per_model": 75,
+  "objective": "precision@top-3/day (val set)",
+  "status": "partial (RF interrupted — too slow)",
+  "n_features": 132,
+  "train_rows": 121206,
+  "val_rows": 33876,
+  "val_period_approx": "Nov 2025 – Dec 2025",
+  "baseline": {
+    "xgboost":      {"precision_top_k": 0.6449, "params": "defaults"},
+    "lightgbm":     {"precision_top_k": 0.6522, "params": "defaults"},
+    "random_forest":{"precision_top_k": 0.5290, "params": "defaults"}
+  },
+  "study_results": {
+    "xgboost": {
+      "best_precision_top_k": 0.7899,
+      "n_trials": 75,
+      "elapsed_sec": 277,
+      "best_params": {
+        "n_estimators": 644,
+        "max_depth": 8,
+        "learning_rate": 0.015716876007624975,
+        "min_child_weight": 8,
+        "gamma": 0.10624108808530996,
+        "subsample": 0.8349549806388114,
+        "colsample_bytree": 0.9745375466408668,
+        "reg_alpha": 1.132898395776765,
+        "reg_lambda": 3.704666760248744
+      }
+    },
+    "lightgbm": {
+      "best_precision_top_k": 0.7899,
+      "n_trials": 75,
+      "elapsed_sec": 228,
+      "best_params": {
+        "n_estimators": 353,
+        "num_leaves": 140,
+        "learning_rate": 0.020342152350114977,
+        "min_child_samples": 73,
+        "feature_fraction": 0.5870483581362322,
+        "bagging_fraction": 0.6839395317257615,
+        "bagging_freq": 4,
+        "reg_alpha": 2.7925205639564408,
+        "reg_lambda": 5.940946675630123,
+        "max_depth": 7
+      }
+    },
+    "random_forest": {
+      "best_precision_top_k": 0.6014,
+      "n_trials": 9,
+      "status": "interrupted (too slow — ~2 min/trial × 30 = 1hr)",
+      "note": "RF is weakest model; baseline 0.529 → best_of_9 0.601; not worth the time"
+    }
+  },
+  "walk_forward_validation": {
+    "baseline_params_pnl": 68417,
+    "tuned_params_pnl":    34876,
+    "monthly_comparison": {
+      "2025-09": {"baseline": -6516,  "tuned": -7985,  "diff": -1469},
+      "2025-10": {"baseline": 28941,  "tuned": 27414,  "diff": -1527},
+      "2025-11": {"baseline": 8966,   "tuned": -1375,  "diff": -10341},
+      "2025-12": {"baseline": 282,    "tuned": -3718,  "diff": -4000},
+      "2026-01": {"baseline": 9812,   "tuned": 4194,   "diff": -5618},
+      "2026-02": {"baseline": 26932,  "tuned": 16346,  "diff": -10586}
+    }
+  },
+  "conclusion": "OVERFIT — Optuna val window = Nov-Dec 2025 only (2 months). Tuned model memorized that window's patterns but degraded everywhere else. Original default params are better calibrated for the full OOS distribution.",
+  "recommendation": "KEEP original defaults. Proper fix = 3-fold temporal CV objective instead of single val split.",
+  "new_findings": {
+    "xgboost_missing_regularization": "reg_alpha=0 and reg_lambda=1.0 (default) were suboptimal — Optuna consistently found reg_alpha>1, reg_lambda>3",
+    "lgbm_num_leaves_gap": "num_leaves was never set (defaulted to 31). Optimal ~140, but this caused overfitting here",
+    "single_val_window_is_insufficient": "20% val set = 2 months — not representative enough for multi-month OOS generalization"
+  }
+}

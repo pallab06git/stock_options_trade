@@ -1257,5 +1257,39 @@
 - [x] Average: $11.4K/month | 4 of 6 months at or near $10K target
 - [x] Full test suite: 1616 passed, 42 skipped
 
+## Step 84: Exhaustive Hyperparameter Tuning Analysis ✅
+- [x] Implemented `src/ml/hyperparameter_tuner.py` — `HyperparameterTuner` class
+  - Optuna TPE sampler, objective: `precision@top-3/day` on val set
+  - Tunes XGBoost (75 trials), LightGBM (75 trials), RF (30 trials), entry threshold sweep
+  - CLI: `ml tune-hyperparams --features-dir --n-trials --top-k --output`
+- [x] New search spaces (critical gaps found):
+  - XGBoost: added `reg_alpha` (L1) + `reg_lambda` (L2) — both were MISSING from current params
+  - LightGBM: added `num_leaves` (primary complexity control, was defaulting to 31)
+  - RandomForest: added `max_features` (was sklearn sqrt default ~11%)
+- [x] Tuning results on val set (Nov-Dec 2025 window):
+  | Model | Baseline P@top-3 | Tuned P@top-3 | Lift |
+  |-------|-----------------|---------------|------|
+  | XGBoost | 0.6449 | 0.7899 | +14.5pp |
+  | LightGBM | 0.6522 | 0.7899 | +13.8pp |
+  | RandomForest | 0.5290 | 0.6014 (9 trials) | +7.2pp |
+- [x] **Walk-forward validation revealed OVERFITTING**:
+  | Month | Baseline (default params) | Tuned params | Diff |
+  |-------|--------------------------|--------------|------|
+  | Sep 2025 | -$6,516 | -$7,985 | -$1,469 |
+  | Oct 2025 | +$28,941 | +$27,414 | -$1,527 |
+  | Nov 2025 | +$8,966 | -$1,375 | **-$10,341** |
+  | Dec 2025 | +$282 | -$3,718 | -$4,000 |
+  | Jan 2026 | +$9,812 | +$4,194 | -$5,618 |
+  | Feb 2026 | +$26,932 | +$16,346 | **-$10,586** |
+  | **Total** | **+$68,417** | **+$34,876** | **-$33,541** |
+- [x] **Root cause**: Optuna val window = Nov-Dec 2025 only (20% of data = 2 months)
+  - Tuned model memorized Nov-Dec 2025 patterns → fails on all other months
+  - LightGBM num_leaves=140 + heavy L2 reg → too conservative → misses big Oct/Feb winners
+  - Proper fix: 3-fold temporal CV in objective (not single val split)
+- [x] **Decision**: REVERTED to original default params. Default params better calibrated.
+- [x] New insight: the "precision ceiling" (54-62%) reflects signal quality, not model capacity
+- [x] Key architectural gap found: XGBoost missing reg_alpha/reg_lambda; LightGBM missing num_leaves
+- [x] Report saved: `reports/hyperparameter_tuning/tuning_results_partial.json`
+
 ---
 **Total tests: 1616 passed, 42 skipped | Last updated: 2026-02-24**

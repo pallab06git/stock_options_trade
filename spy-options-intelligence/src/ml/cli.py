@@ -7840,4 +7840,104 @@ def walk_forward(
         import traceback
         click.echo(f"Error: {exc}", err=True)
         click.echo(traceback.format_exc(), err=True)
+
+
+# ---------------------------------------------------------------------------
+# tune-hyperparams
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("tune-hyperparams")
+@click.option(
+    "--features-dir",
+    default="data/processed/features",
+    show_default=True,
+    help="Directory containing *_features.csv files.",
+)
+@click.option(
+    "--n-trials",
+    default=75,
+    show_default=True,
+    type=int,
+    help="Number of Optuna trials per model (RF capped at 30).",
+)
+@click.option(
+    "--top-k",
+    default=3,
+    show_default=True,
+    type=int,
+    help="Signals per day used for precision@top-k objective.",
+)
+@click.option(
+    "--start-date",
+    default="2025-03-03",
+    show_default=True,
+    help="Start date for feature data.",
+)
+@click.option(
+    "--end-date",
+    default="2026-02-19",
+    show_default=True,
+    help="End date for feature data.",
+)
+@click.option(
+    "--output",
+    default="reports/hyperparameter_tuning",
+    show_default=True,
+    help="Directory for tuning report JSON.",
+)
+def tune_hyperparams(features_dir, n_trials, top_k, start_date, end_date, output):
+    """Exhaustive hyperparameter optimisation for the stacked ensemble.
+
+    Runs Optuna with precision@top-k/day as the objective.
+    Tunes XGBoost (75 trials), LightGBM (75 trials), RandomForest (30 trials),
+    then sweeps entry thresholds.  Saves a full JSON report + YAML param block.
+    """
+    try:
+        import json
+        from src.ml.hyperparameter_tuner import HyperparameterTuner
+
+        click.echo(
+            f"\nStarting hyperparameter optimisation\n"
+            f"  features_dir : {features_dir}\n"
+            f"  n_trials     : {n_trials} per model (RF ≤ 30)\n"
+            f"  objective    : precision@top-{top_k}/day\n"
+            f"  date range   : {start_date} → {end_date}\n"
+            f"  output       : {output}\n"
+        )
+
+        tuner = HyperparameterTuner(
+            features_dir=features_dir,
+            n_trials=n_trials,
+            top_k=top_k,
+            train_start=start_date,
+            train_end=end_date,
+        )
+        report = tuner.run(output_dir=output)
+
+        click.echo("\n" + "═" * 60)
+        click.echo("TUNING COMPLETE")
+        click.echo("═" * 60)
+        click.echo(f"Objective: precision@top-{top_k}/day\n")
+
+        for model_name in ["xgboost", "lightgbm", "random_forest"]:
+            baseline_v = report["baseline"].get(model_name, {}).get("precision_top_k", 0.0)
+            sr = report["study_results"].get(model_name, {})
+            tuned_v = sr.get("best_precision_top_k", 0.0)
+            n_t = sr.get("n_trials", 0)
+            click.echo(
+                f"  {model_name:<16}  baseline={baseline_v:.4f}  "
+                f"tuned={tuned_v:.4f}  lift={tuned_v-baseline_v:+.4f}  "
+                f"({n_t} trials)"
+            )
+
+        rec_thr = report["recommended_threshold"]
+        click.echo(f"\nRecommended entry threshold: {rec_thr}")
+        click.echo(f"\nFull report  : {output}/tuning_results.json")
+        click.echo(f"YAML params  : {output}/best_params_yaml.txt")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
