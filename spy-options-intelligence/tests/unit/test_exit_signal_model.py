@@ -244,11 +244,11 @@ class TestExitSignalModelSaveLoad:
 
 class TestGenerateTrainingData:
     def test_generates_from_signals(self, tmp_path):
-        # Create raw option parquet
-        date_dir = tmp_path / "2025-03-03"
-        date_dir.mkdir()
+        # Create raw option parquet (layout: {ticker_dir}/{date}.parquet)
+        ticker_dir = tmp_path / "O_SPY250307C00580000"
+        ticker_dir.mkdir()
         bars = _make_bars(60)
-        bars.to_parquet(date_dir / "O_SPY250307C00580000.parquet")
+        bars.to_parquet(ticker_dir / "2025-03-03.parquet")
 
         signals = pd.DataFrame([{
             "date": "2025-03-03",

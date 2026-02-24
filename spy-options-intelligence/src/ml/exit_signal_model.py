@@ -243,9 +243,9 @@ class ExitSignalModel:
             contract_type = int(signal.get("contract_type", 1))
             entry_ts = int(signal.get("timestamp", 0))
 
-            # Find raw option file
+            # Find raw option file (layout: {ticker_dir}/{date}.parquet)
             safe_ticker = ticker.replace(":", "_")
-            opt_file = raw_dir / date / f"{safe_ticker}.parquet"
+            opt_file = raw_dir / safe_ticker / f"{date}.parquet"
             if not opt_file.exists():
                 continue
 
@@ -511,11 +511,13 @@ class ExitSignalModel:
             is_ensemble = False
 
         # Find dates with both features and raw options
+        # Layout: {raw_dir}/{ticker_dir}/{date}.parquet → collect dates from parquet filenames
         feat_files = sorted(feat_dir.glob("*_features.csv"))
         raw_dates = set()
-        for d in raw_dir.iterdir():
-            if d.is_dir():
-                raw_dates.add(d.name)
+        for ticker_dir in raw_dir.iterdir():
+            if ticker_dir.is_dir():
+                for p in ticker_dir.glob("*.parquet"):
+                    raw_dates.add(p.stem)  # stem = "2025-03-03"
 
         all_signals = []
         for feat_file in feat_files:

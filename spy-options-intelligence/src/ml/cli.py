@@ -7623,8 +7623,21 @@ def simulate_real_bars(
     show_default=True,
     help="Output directory for pipeline results.",
 )
+@click.option(
+    "--entry-threshold",
+    default=None,
+    type=float,
+    help="Override entry probability threshold (default: from config, 0.70).",
+)
+@click.option(
+    "--max-signals-per-day",
+    default=None,
+    type=int,
+    help="Override max signals per day (default: from config, 3).",
+)
 def run_signal_pipeline(
-    config_dir, ensemble_path, exit_model_path, start_date, end_date, output
+    config_dir, ensemble_path, exit_model_path, start_date, end_date, output,
+    entry_threshold, max_signals_per_day,
 ):
     """Run end-to-end signal pipeline backtest.
 
@@ -7637,6 +7650,13 @@ def run_signal_pipeline(
         setup_logger(config)
 
         from src.ml.signal_pipeline import SignalPipeline
+
+        # Apply CLI overrides to config
+        sp_cfg = config.setdefault("signal_pipeline", {})
+        if entry_threshold is not None:
+            sp_cfg["entry_threshold"] = entry_threshold
+        if max_signals_per_day is not None:
+            sp_cfg["max_signals_per_day"] = max_signals_per_day
 
         pipeline = SignalPipeline(config)
         result = pipeline.run_backtest(

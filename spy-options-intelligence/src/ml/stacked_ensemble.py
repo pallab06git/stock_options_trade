@@ -335,8 +335,10 @@ class StackedEnsemble:
         if not self._is_trained:
             raise RuntimeError("StackedEnsemble must be train() before predict_proba()")
 
-        fcols = feature_cols or self._feature_cols
-        X = df[fcols].values.astype(np.float32)
+        # Always align to the full training feature set; fill missing cols with 0
+        fcols = self._feature_cols
+        aligned = df.reindex(columns=fcols, fill_value=0.0)
+        X = aligned.values.astype(np.float32)
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Level-0 predictions

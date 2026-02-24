@@ -144,9 +144,9 @@ class RealBarSimulator:
             if entry_price <= 0:
                 continue
 
-            # Load raw option bars
+            # Load raw option bars (layout: {ticker_dir}/{date}.parquet)
             safe_ticker = cand["ticker"].replace(":", "_")
-            opt_file = raw_dir / date / f"{safe_ticker}.parquet"
+            opt_file = raw_dir / safe_ticker / f"{date}.parquet"
             if not opt_file.exists():
                 continue
 
@@ -248,9 +248,9 @@ class RealBarSimulator:
             if end_date and date > end_date:
                 continue
 
-            # Only process dates with raw option data
-            date_raw_dir = raw_dir / date
-            if not date_raw_dir.exists():
+            # Only process dates that have at least one raw option parquet file
+            # Layout: {raw_dir}/{ticker_dir}/{date}.parquet
+            if not any(raw_dir.glob(f"*/{date}.parquet")):
                 continue
 
             try:
@@ -329,6 +329,9 @@ class RealBarSimulator:
         if trade.num_contracts < 1:
             return None
 
+        # Entry bar's minutes since 9:30 AM open
+        entry_minutes_since_open = (hour_et - 9) * 60 + minute_et - 30
+
         # Walk forward bar by bar
         max_bars = min(exit_model.max_hold_minutes, len(bars) - entry_bar_idx)
 
@@ -341,12 +344,8 @@ class RealBarSimulator:
             unrealized_pnl = (current_price - entry_price) / entry_price * 100
             time_in_trade = float(offset)
 
-            # Minutes to market close (4:00 PM ET = 390 min from 9:30)
-            minutes_to_close = 390 - (
-                float(bars.iloc[bar_idx].get("minutes_since_open", 390))
-                if "minutes_since_open" in bars.columns
-                else 390 - offset
-            )
+            # Minutes to 4:00 PM ET close (market = 9:30→16:00 = 390 min)
+            minutes_to_close = max(0, 390 - (entry_minutes_since_open + offset))
 
             # Compute exit features
             exit_feats = self._exit_feature_eng.compute_exit_features(
