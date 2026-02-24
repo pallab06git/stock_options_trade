@@ -30,12 +30,16 @@ _st_mock = MagicMock()
 _st_mock.cache_data = MagicMock(side_effect=lambda **kwargs: lambda fn: fn)
 sys.modules.setdefault("streamlit", _st_mock)
 
-# Also mock plotly so we can test without it installed
-_plotly_express_mock = MagicMock()
-_plotly_go_mock = MagicMock()
-sys.modules.setdefault("plotly", MagicMock())
-sys.modules.setdefault("plotly.express", _plotly_express_mock)
-sys.modules.setdefault("plotly.graph_objects", _plotly_go_mock)
+# Mock plotly only if not already installed (avoids corrupting sys.modules
+# for other test files that need the real plotly, e.g. test_trade_dashboard)
+try:
+    import plotly  # noqa: F401
+except ImportError:
+    _plotly_express_mock = MagicMock()
+    _plotly_go_mock = MagicMock()
+    sys.modules.setdefault("plotly", MagicMock())
+    sys.modules.setdefault("plotly.express", _plotly_express_mock)
+    sys.modules.setdefault("plotly.graph_objects", _plotly_go_mock)
 
 import src.ml.dashboard as dash  # noqa: E402 — must come after mock setup
 

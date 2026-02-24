@@ -122,6 +122,38 @@ ml_training:
     output_dir: "data/reports/backtest"
 
 # ---------------------------------------------------------------------------
+# Stacked Ensemble  (src/ml/stacked_ensemble.py)
+# ---------------------------------------------------------------------------
+stacked_ensemble:
+  n_regimes:        4       # KMeans clusters for regime detection
+  contamination:    0.05    # Isolation Forest anomaly rate
+  discount_factor:  0.5     # probability multiplier for anomalous bars
+  random_state:     42
+
+# ---------------------------------------------------------------------------
+# Exit Model  (src/ml/exit_signal_model.py)
+# ---------------------------------------------------------------------------
+exit_model:
+  exit_threshold:     0.60   # P(exit) cutoff for momentum exhaustion
+  max_hold_minutes:   120    # force-close after this many minutes
+  min_hold_minutes:     5    # don't exit before this many minutes
+  stop_loss_pct:     -20.0   # hard stop-loss percentage
+  reversal_pct:       15.0   # reversal from peak to label optimal exit
+  random_state:        42
+
+# ---------------------------------------------------------------------------
+# Signal Pipeline  (src/ml/signal_pipeline.py)
+# ---------------------------------------------------------------------------
+signal_pipeline:
+  position_size_usd:        10000   # USD per trade
+  max_signals_per_day:          3   # max trades per day
+  entry_threshold:           0.70   # minimum entry probability
+  exit_threshold:            0.60   # minimum exit probability
+  eod_close_minutes_before:    10   # force-close N minutes before close
+  max_hold_minutes:           120   # maximum holding period
+  fee_per_trade:              4.0   # round-trip commission per trade
+
+# ---------------------------------------------------------------------------
 # Output paths  (shared across ML modules)
 # ---------------------------------------------------------------------------
 ml_paths:

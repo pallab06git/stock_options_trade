@@ -60,9 +60,12 @@ import numpy as np
 import pandas as pd
 import pytz
 
+from src.processing.microstructure_features import MicrostructureFeatureEngineer
 from src.utils.logger import get_logger
 
 logger = get_logger()
+
+_microstructure = MicrostructureFeatureEngineer()
 
 _ET_TZ = pytz.timezone("America/New_York")
 
@@ -457,6 +460,9 @@ class MLFeatureEngineer:
         ]
         df[ta_cols] = df[ta_cols].ffill().bfill()
 
+        # --- SPY microstructure features ---
+        df = _microstructure.compute_spy_microstructure(df)
+
         # --- Return only timestamp + computed/prefixed columns ---
         # Note: spy_bar_count starts with "spy_" so it is already included
         # in the spy_* list; do not list it again to avoid duplicate columns.
@@ -666,6 +672,9 @@ class MLFeatureEngineer:
 
         # --- Option bar counter (sequential within this contract's day) ---
         df["opt_bar_count"] = range(1, len(df) + 1)
+
+        # --- Option microstructure features ---
+        df = _microstructure.compute_option_microstructure(df)
 
         # --- Directional and consolidation features ---
         df = self._compute_directional_features(df)

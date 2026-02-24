@@ -38,7 +38,14 @@ Implementation history for SPY Options Intelligence Platform — Phase 1.
 | 27 | 2026-02-20 | `d7d2b28` | OptionsScanner summary metrics — 8 printed metrics (contract-days, bars, events/cday, >20% mins, rate, duration, hour dist), `_last_scan_stats`, single Parquet read via `_df` param | 9 |
 | 28 | 2026-02-20 | — | Full-year data collection — 241 SPY days (189,742 bars), 68 options dates (Massive ~3-month history limit), per-date parallel watcher; full-year scan: 544 events / 125 cdays / 55.43% rate | — |
 
-**Total**: 774 tests passing + 7 live tests (skipped outside market hours)
+| 73 | 2026-02-23 | — | Microstructure + Regime Features — 12 new feature cols (spy/opt tx_intensity, vol_per_tx, intrabar_vol, tick_direction), KMeans regime detector (4 regimes) | 27 |
+| 74 | 2026-02-23 | — | Stacked Ensemble + Anomaly Filter — XGBoost/LightGBM/RF → LogisticRegression meta-learner → IsotonicRegression calibration, IsolationForest anomaly discounting | 30 |
+| 75 | 2026-02-23 | — | Exit Signal Model — 15 exit features (trade-relative, momentum exhaustion, market context), LightGBM exit classifier, hard stop-loss/time-limit/EOD rules | 25 |
+| 76 | 2026-02-23 | — | Real-Bar Trade Simulator — bar-by-bar simulation with entry+exit models on actual minute data, max 3 trades/day | 12 |
+| 77 | 2026-02-23 | — | Signal Pipeline — end-to-end orchestrator (features → regime → entry → top-N → simulation → report), PipelineReport with monthly P&L, exit analysis | 13 |
+| 78 | 2026-02-23 | — | Trade Dashboard — Plotly dark-theme HTML (KPI cards, equity curve, monthly P&L, trade scatter, exit analysis, trade table) | 13 |
+
+**Total**: 1597 tests passing + 7 skipped (LSTM/live tests)
 
 ---
 

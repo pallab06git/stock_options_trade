@@ -1102,5 +1102,65 @@
   - **Recommended operating point**: Top-3 per day OR threshold=0.65 for ~59-62% precision
 - Report: `reports/consolidation_filter_spy/v5_aligned_comparison.json`
 
+## Step 73: Microstructure + Regime Features ✅
+- [x] Implement `src/processing/microstructure_features.py` — `MicrostructureFeatureEngineer` class
+  - `compute_spy_microstructure(df)` → 6 columns: spy_tx_intensity_5m, spy_vol_per_tx, spy_vol_per_tx_zscore, spy_intrabar_vol, spy_intrabar_vol_ratio, spy_tick_direction
+  - `compute_option_microstructure(df)` → 6 columns: opt_tx_intensity_5m, opt_vol_per_tx, opt_vol_per_tx_zscore, opt_intrabar_vol, opt_intrabar_vol_ratio, opt_tick_direction
+- [x] Implement `src/processing/regime_detector.py` — `RegimeDetector` class
+  - KMeans clustering on 6 SPY features into 4 regimes (low-vol trending, low-vol mean-revert, high-vol trending, high-vol choppy)
+  - `fit(df)` / `predict(df)` → adds market_regime (0–3) and regime_confidence
+- [x] Integrate into `src/processing/ml_feature_engineer.py` — calls at end of `_compute_spy_features()` and `_compute_option_features()`
+- [x] Unit tests: `test_microstructure_features.py` (15 tests), `test_regime_detector.py` (12 tests) — 27 total
+- Feature CSVs: 136 → 148 columns (+12 microstructure; regime added at training time)
+
+## Step 74: Stacked Ensemble + Anomaly Filter ✅
+- [x] Implement `src/ml/anomaly_filter.py` — `AnomalyFilter` class
+  - IsolationForest-based anomaly detection with probability discounting
+  - `fit(X)`, `is_anomalous(X)`, `apply_discount(probabilities, X)`
+- [x] Implement `src/ml/stacked_ensemble.py` — `StackedEnsemble` class
+  - Level-0: XGBoost + LightGBM + RandomForest (trained on train set with class balancing)
+  - Level-1: LogisticRegression meta-learner (trained on validation set predictions)
+  - Calibration: IsotonicRegression for meaningful probabilities
+  - Anomaly filter: applied post-meta-learner
+  - `train()`, `predict_proba()`, `predict_with_detail()`, `save()`, `load()`
+- [x] CLI: `ml train-stacked-ensemble` command
+- [x] Unit tests: `test_anomaly_filter.py` (10 tests), `test_stacked_ensemble.py` (20 tests) — 30 total
+- [x] Edge case: handles val set with only 1 class (synthetic 2-class fallback for LogisticRegression)
+
+## Step 75: Exit Signal Model ✅
+- [x] Implement `src/ml/exit_signal_model.py` — `ExitFeatureEngineer` + `ExitSignalModel` classes
+  - 15 exit features in 3 groups: trade-relative (5), momentum exhaustion (5), market context (5)
+  - LightGBM classifier for P(exit) prediction
+  - Hard rules override model: stop-loss (-20%), time limit (120m), EOD close (10m before)
+  - `train()`, `should_exit()`, `save()`, `load()`
+- [x] CLI: `ml train-exit-model` command
+- [x] Unit tests: `test_exit_signal_model.py` (25 tests)
+
+## Step 76: Real-Bar Trade Simulator ✅
+- [x] Implement `src/ml/real_bar_simulator.py` — `RealBarSimulator` class
+  - Bar-by-bar trade simulation using entry + exit models on actual minute data
+  - `simulate_day()`, `simulate_period()`, `_simulate_trade()`
+  - Processes candidates chronologically, one trade at a time, max 3/day
+  - Reuses `Trade` class from `src/ml/trade_simulator.py`
+- [x] CLI: `ml simulate-real-bars` command
+- [x] Unit tests: `test_real_bar_simulator.py` (12 tests)
+
+## Step 77: End-to-End Signal Pipeline ✅
+- [x] Implement `src/ml/signal_pipeline.py` — `SignalPipeline` + `PipelineReport` classes
+  - Orchestrates: feature loading → regime detection → entry scoring → top-N selection → real-bar simulation → report generation
+  - `run_backtest()`, `generate_daily_signals()`, `_save_report()`
+- [x] Added config sections to `config/ml_settings.yaml`: stacked_ensemble, exit_model, signal_pipeline
+- [x] CLI: `ml run-signal-pipeline` command
+- [x] Unit tests: `test_signal_pipeline.py` (13 tests)
+
+## Step 78: Trade Dashboard ✅
+- [x] Implement `src/visualization/trade_dashboard.py` — `TradeDashboard` class
+  - Plotly dark-theme standalone HTML dashboard
+  - Sections: KPI cards, equity curve + drawdown, monthly P&L bars ($10K target line), trade scatter, exit analysis, sortable trade table
+  - Lazy plotly imports (inside methods) to avoid pytest collection conflicts
+- [x] CLI: `ml build-trade-dashboard` command
+- [x] Unit tests: `test_trade_dashboard.py` (13 tests)
+- [x] Fixed plotly import conflict: `test_ml_dashboard.py` was injecting MagicMock into sys.modules["plotly"] unconditionally; changed to only mock when plotly is not installed
+
 ---
-**Total tests: 1516 collected (1474 run) | Last updated: 2026-02-23**
+**Total tests: 1597 passed, 7 skipped | Last updated: 2026-02-23**

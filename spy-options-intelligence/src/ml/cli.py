@@ -7299,3 +7299,410 @@ def build_signal_dashboard(
         click.echo(f"Error: {exc}", err=True)
         click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# train-stacked-ensemble  (Step 74)
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("train-stacked-ensemble")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Override feature_engineering.features_dir.",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Earliest feature date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Latest feature date (YYYY-MM-DD).",
+)
+@click.option(
+    "--n-regimes",
+    default=4,
+    type=int,
+    show_default=True,
+    help="Number of market regime clusters.",
+)
+@click.option(
+    "--contamination",
+    default=0.05,
+    type=float,
+    show_default=True,
+    help="Anomaly filter contamination rate.",
+)
+@click.option(
+    "--output",
+    default="models/stacked_ensemble.pkl",
+    show_default=True,
+    help="Path to save ensemble artifact.",
+)
+def train_stacked_ensemble(
+    config_dir, features_dir, start_date, end_date, n_regimes, contamination, output
+):
+    """Train a stacked ensemble (XGBoost + LightGBM + RF + meta-learner).
+
+    Pipeline: load features → chronological split → train base models on
+    train set → generate meta-features on val set → train meta-learner →
+    calibrate → fit anomaly filter → save artifact.
+    """
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        import numpy as np
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+
+        # Inject ensemble config
+        config.setdefault("stacked_ensemble", {})
+        config["stacked_ensemble"]["n_regimes"] = n_regimes
+        config["stacked_ensemble"]["contamination"] = contamination
+
+        from src.ml.train_xgboost import load_features, _NON_FEATURE_COLS
+        from src.ml.data_splitter import DataSplitter
+        from src.ml.stacked_ensemble import StackedEnsemble
+
+        df = load_features(feat_dir, start_date, end_date)
+        if df.empty:
+            raise ValueError(f"No feature data found in {feat_dir}")
+
+        splitter = DataSplitter(config)
+        train_df, val_df, test_df = splitter.split(df)
+
+        click.echo(f"\n--- Stacked Ensemble Training ---")
+        click.echo(f"Features dir: {feat_dir}")
+        click.echo(f"Train: {len(train_df)} | Val: {len(val_df)} | Test: {len(test_df)}")
+
+        feature_cols = sorted(
+            [c for c in df.columns if c not in _NON_FEATURE_COLS]
+        )
+        click.echo(f"Features: {len(feature_cols)}")
+
+        ensemble = StackedEnsemble(config)
+        metrics = ensemble.train(train_df, val_df, feature_cols)
+        ensemble.save(output)
+
+        click.echo(f"\nVal precision:  {metrics['val_precision']:.4f}")
+        click.echo(f"Val recall:     {metrics['val_recall']:.4f}")
+        click.echo(f"Val F1:         {metrics['val_f1']:.4f}")
+        click.echo(f"Val ROC-AUC:    {metrics['val_roc_auc']:.4f}")
+        click.echo(f"Base models:    {metrics['base_model_names']}")
+        click.echo(f"Saved to:       {output}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# train-exit-model  (Step 75)
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("train-exit-model")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--entry-model-path",
+    required=True,
+    help="Path to the entry model artifact (ensemble or XGBoost .pkl).",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Override feature_engineering.features_dir.",
+)
+@click.option(
+    "--raw-options-dir",
+    default=None,
+    help="Directory with raw option minute Parquet files.",
+)
+@click.option(
+    "--output",
+    default="models/exit_model.pkl",
+    show_default=True,
+    help="Path to save exit model artifact.",
+)
+def train_exit_model(config_dir, entry_model_path, features_dir, raw_options_dir, output):
+    """Train a LightGBM exit signal model from historical entry signals.
+
+    Generates exit training data by walking forward from historical entry
+    signals through raw option bars, then trains a classifier to predict
+    optimal exit points.
+    """
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        raw_opt_dir = raw_options_dir or config.get("feature_engineering", {}).get(
+            "options_data_dir", "data/raw/options/minute"
+        )
+
+        from src.ml.exit_signal_model import ExitSignalModel
+
+        exit_model = ExitSignalModel(config)
+        metrics = exit_model.train(
+            entry_model_path=entry_model_path,
+            features_dir=feat_dir,
+            raw_options_dir=raw_opt_dir,
+        )
+        exit_model.save(output)
+
+        click.echo(f"\n--- Exit Model Training ---")
+        click.echo(f"Training samples:  {metrics.get('n_train_samples', 0)}")
+        click.echo(f"Exit label rate:   {metrics.get('exit_label_rate', 0):.2%}")
+        click.echo(f"Val AUC:           {metrics.get('val_auc', 0):.4f}")
+        click.echo(f"Val precision:     {metrics.get('val_precision', 0):.4f}")
+        click.echo(f"Saved to:          {output}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# simulate-real-bars  (Step 76)
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("simulate-real-bars")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--entry-model-path",
+    required=True,
+    help="Path to entry model artifact (ensemble .pkl).",
+)
+@click.option(
+    "--exit-model-path",
+    required=True,
+    help="Path to exit model artifact (.pkl).",
+)
+@click.option(
+    "--features-dir",
+    default=None,
+    help="Override feature_engineering.features_dir.",
+)
+@click.option(
+    "--raw-options-dir",
+    default=None,
+    help="Directory with raw option minute Parquet files.",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Start date for simulation (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="End date for simulation (YYYY-MM-DD).",
+)
+@click.option(
+    "--output",
+    default="reports/real_bar_simulation",
+    show_default=True,
+    help="Output directory for simulation results.",
+)
+def simulate_real_bars(
+    config_dir, entry_model_path, exit_model_path, features_dir,
+    raw_options_dir, start_date, end_date, output
+):
+    """Run bar-by-bar trade simulation using entry + exit models.
+
+    Walks through each day chronologically, scores entry candidates,
+    then simulates actual trades by walking forward through raw
+    option minute bars with exit model decision-making.
+    """
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        feat_dir = features_dir or config.get("feature_engineering", {}).get(
+            "features_dir", "data/processed/features"
+        )
+        raw_opt_dir = raw_options_dir or config.get("feature_engineering", {}).get(
+            "options_data_dir", "data/raw/options/minute"
+        )
+
+        from src.ml.real_bar_simulator import RealBarSimulator
+
+        simulator = RealBarSimulator(config)
+        result = simulator.simulate_period(
+            entry_model_path=entry_model_path,
+            exit_model_path=exit_model_path,
+            features_dir=feat_dir,
+            raw_options_dir=raw_opt_dir,
+            start_date=start_date,
+            end_date=end_date,
+            output_dir=output,
+        )
+
+        click.echo(f"\n--- Real-Bar Simulation Results ---")
+        click.echo(f"Period: {result.get('start_date')} → {result.get('end_date')}")
+        click.echo(f"Trading days: {result.get('n_days', 0)}")
+        click.echo(f"Total trades: {result.get('total_trades', 0)}")
+        click.echo(f"Win rate: {result.get('win_rate', 0):.1%}")
+        click.echo(f"Net P&L: ${result.get('net_pnl', 0):,.0f}")
+        click.echo(f"Output: {output}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# run-signal-pipeline  (Step 77)
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("run-signal-pipeline")
+@click.option(
+    "--config-dir",
+    default="config",
+    show_default=True,
+    help="Directory containing YAML config files.",
+)
+@click.option(
+    "--ensemble-path",
+    required=True,
+    help="Path to stacked ensemble artifact (.pkl).",
+)
+@click.option(
+    "--exit-model-path",
+    required=True,
+    help="Path to exit model artifact (.pkl).",
+)
+@click.option(
+    "--start-date",
+    default=None,
+    help="Backtest start date (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    default=None,
+    help="Backtest end date (YYYY-MM-DD).",
+)
+@click.option(
+    "--output",
+    default="reports/signal_pipeline",
+    show_default=True,
+    help="Output directory for pipeline results.",
+)
+def run_signal_pipeline(
+    config_dir, ensemble_path, exit_model_path, start_date, end_date, output
+):
+    """Run end-to-end signal pipeline backtest.
+
+    Orchestrates: feature loading → regime detection → entry scoring →
+    top-N selection → real-bar simulation with exit model → report.
+    """
+    try:
+        loader = ConfigLoader(config_dir=config_dir)
+        config = loader.load()
+        setup_logger(config)
+
+        from src.ml.signal_pipeline import SignalPipeline
+
+        pipeline = SignalPipeline(config)
+        result = pipeline.run_backtest(
+            ensemble_path=ensemble_path,
+            exit_model_path=exit_model_path,
+            start_date=start_date,
+            end_date=end_date,
+            output_dir=output,
+        )
+
+        click.echo(f"\n--- Signal Pipeline Results ---")
+        click.echo(f"Period: {result.get('start_date')} → {result.get('end_date')}")
+        click.echo(f"Trading days: {result.get('n_days', 0)}")
+        click.echo(f"Total trades: {result.get('total_trades', 0)}")
+        click.echo(f"Win rate: {result.get('win_rate', 0):.1%}")
+        click.echo(f"Net P&L: ${result.get('net_pnl', 0):,.0f}")
+        click.echo(f"Avg trades/day: {result.get('avg_trades_per_day', 0):.1f}")
+        click.echo(f"Report: {output}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# build-trade-dashboard  (Step 78)
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("build-trade-dashboard")
+@click.option(
+    "--report-path",
+    required=True,
+    help="Path to pipeline report JSON file.",
+)
+@click.option(
+    "--output",
+    default="reports/trade_dashboard.html",
+    show_default=True,
+    help="Output path for the HTML dashboard.",
+)
+def build_trade_dashboard(report_path, output):
+    """Build an interactive HTML trade dashboard from pipeline results.
+
+    Generates a standalone Plotly-based dark-theme dashboard with
+    equity curves, monthly P&L, regime analysis, and trade details.
+    """
+    try:
+        import json
+
+        from src.visualization.trade_dashboard import TradeDashboard
+
+        with open(report_path) as f:
+            report = json.load(f)
+
+        dashboard = TradeDashboard()
+        dashboard.build_dashboard(report, output)
+
+        click.echo(f"\n--- Trade Dashboard ---")
+        click.echo(f"Report: {report_path}")
+        click.echo(f"Dashboard: {output}")
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)
