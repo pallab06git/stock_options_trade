@@ -208,6 +208,19 @@ class ExitSignalModel:
         self.reversal_pct = cfg.get("reversal_pct", 15.0)
         self.random_state = cfg.get("random_state", 42)
 
+        # Adaptive early-loss exit: lower model threshold when trade is losing early.
+        # Tier 1: loss >= pct_t1 AND time <= time_t1 min → model threshold drops to thresh_t1
+        # Tier 2: loss >= pct_t2 AND time <= time_t2 min → model threshold drops to thresh_t2
+        self.early_loss_pct_t1    = cfg.get("early_loss_pct_tier1",   -3.0)
+        self.early_loss_time_t1   = cfg.get("early_loss_time_tier1",   10.0)
+        self.early_loss_thresh_t1 = cfg.get("early_loss_threshold_tier1", 0.25)
+        self.early_loss_pct_t2    = cfg.get("early_loss_pct_tier2",   -6.0)
+        self.early_loss_time_t2   = cfg.get("early_loss_time_tier2",   20.0)
+        self.early_loss_thresh_t2 = cfg.get("early_loss_threshold_tier2", 0.15)
+        # Early-loss detection can start earlier than standard min_hold_minutes.
+        # Hard-stop trades typically hit -12% in 4–6 min, before the 5-min gate opens.
+        self.min_hold_early_loss  = cfg.get("min_hold_early_loss", 2.0)
+
         self._model = None
         self._feature_engineer = ExitFeatureEngineer()
         self._is_trained = False
@@ -409,11 +422,15 @@ class ExitSignalModel:
         """Decide whether to exit the current trade.
 
         Hard rules (override model):
-          - unrealized_pnl <= stop_loss_pct    → "Hard stop"
+          - unrealized_pnl <= stop_loss_pct    → "Hard stop"  (absolute backstop)
           - time_in_trade >= max_hold_minutes   → "Time limit"
           - minutes_to_close <= 10              → "EOD close"
 
-        Model rule:
+        Adaptive early-loss exit (model-driven, lower threshold when losing early):
+          - Tier 1: loss >= -3% AND time <= 10 min → exit if P(exit) >= 0.25
+          - Tier 2: loss >= -6% AND time <= 20 min → exit if P(exit) >= 0.15
+
+        Standard model rule:
           - P(exit) >= exit_threshold           → "Momentum exhaustion"
 
         Args:
@@ -425,36 +442,55 @@ class ExitSignalModel:
         Returns:
             Tuple of (should_exit, probability, reason).
         """
-        # Hard rules first
+        # 1. Hard stop (absolute backstop — model-independent)
         if unrealized_pnl <= self.stop_loss_pct:
             return True, 1.0, "Hard stop"
 
+        # 2. Time-based hard rules
         if time_in_trade >= self.max_hold_minutes:
             return True, 1.0, "Time limit"
 
         if minutes_to_close <= 10:
             return True, 1.0, "EOD close"
 
-        # Don't exit too early
-        if time_in_trade < self.min_hold_minutes:
+        # 3. Absolute minimum gate (no exits in first 2 minutes regardless)
+        if time_in_trade < self.min_hold_early_loss:
             return False, 0.0, "Min hold"
 
-        # Model prediction
-        if self._model is not None and self._is_trained:
-            if isinstance(exit_features, pd.DataFrame):
-                X = exit_features[EXIT_FEATURE_COLS].values.astype(np.float32)
-            else:
-                X = exit_features.reshape(1, -1).astype(np.float32)
+        # 4. Get model probability once (used for all remaining checks)
+        if self._model is None or not self._is_trained:
+            return False, 0.0, "No model"
 
-            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-            proba = self._model.predict_proba(X)[:, 1]
-            p = float(proba[0]) if len(proba) > 0 else 0.0
+        if isinstance(exit_features, pd.DataFrame):
+            X = exit_features[EXIT_FEATURE_COLS].values.astype(np.float32)
+        else:
+            X = exit_features.reshape(1, -1).astype(np.float32)
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        proba = self._model.predict_proba(X)[:, 1]
+        p = float(proba[0]) if len(proba) > 0 else 0.0
 
-            if p >= self.exit_threshold:
-                return True, p, "Momentum exhaustion"
-            return False, p, "Hold"
+        # 5. Adaptive early-loss exit: trust model sooner when trade is losing.
+        # Fires from min_hold_early_loss (2 min) so it can catch fast-falling trades
+        # that would otherwise slide past the standard 5-min min_hold into a hard stop.
+        if (unrealized_pnl <= self.early_loss_pct_t1
+                and time_in_trade <= self.early_loss_time_t1
+                and p >= self.early_loss_thresh_t1):
+            return True, p, "Early loss exit"
 
-        return False, 0.0, "No model"
+        if (unrealized_pnl <= self.early_loss_pct_t2
+                and time_in_trade <= self.early_loss_time_t2
+                and p >= self.early_loss_thresh_t2):
+            return True, p, "Early loss exit"
+
+        # 6. Standard min hold gate for momentum exhaustion (longer wait)
+        if time_in_trade < self.min_hold_minutes:
+            return False, p, "Min hold"
+
+        # 7. Standard momentum exhaustion
+        if p >= self.exit_threshold:
+            return True, p, "Momentum exhaustion"
+
+        return False, p, "Hold"
 
     def save(self, path: str | Path) -> None:
         """Save exit model artifact."""

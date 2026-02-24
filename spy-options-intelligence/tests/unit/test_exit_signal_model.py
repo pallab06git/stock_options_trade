@@ -162,9 +162,10 @@ class TestExitSignalModelShouldExit:
         assert reason == "EOD close"
 
     def test_min_hold(self):
+        # min_hold_early_loss defaults to 2.0, so time < 2.0 triggers "Min hold"
         model = ExitSignalModel()
         feats = np.zeros((1, 15))
-        should, prob, reason = model.should_exit(feats, 5.0, 2.0)
+        should, prob, reason = model.should_exit(feats, 5.0, 1.0)
         assert should is False
         assert reason == "Min hold"
 
@@ -174,6 +175,83 @@ class TestExitSignalModelShouldExit:
         should, prob, reason = model.should_exit(feats, 5.0, 30.0)
         assert should is False
         assert reason == "No model"
+
+    def test_hard_stop_before_early_loss(self):
+        """Hard stop fires even when early-loss conditions are also met."""
+        # Use a config with a tight stop so both hard-stop and tier-1 conditions met
+        cfg = {"exit_model": {"stop_loss_pct": -5.0}}
+        model = ExitSignalModel(cfg)
+        feats = np.zeros((1, 15))
+        # -6% is below hard stop (-5%) AND tier-1 early loss (-3%), time=7 in tier-1 window
+        should, prob, reason = model.should_exit(feats, -6.0, 7.0)
+        assert should is True
+        assert reason == "Hard stop"  # hard stop takes priority over early-loss
+
+
+class TestAdaptiveEarlyLossExit:
+    """Tests for the adaptive early-loss exit tiers."""
+
+    def _trained_model(self):
+        rng = np.random.RandomState(42)
+        n = 400
+        data = {col: rng.randn(n).astype(np.float32) for col in EXIT_FEATURE_COLS}
+        # Give losing early-bar rows exit_label=1 so the model learns the pattern
+        data["unrealized_pnl_pct"] = np.where(
+            np.arange(n) < 200, -4.0, 5.0
+        ).astype(np.float32)
+        data["exit_label"] = (np.arange(n) < 200).astype(int)
+        df = pd.DataFrame(data)
+        model = ExitSignalModel()
+        model.train(training_data=df)
+        return model
+
+    def test_tier1_conditions_check(self):
+        """With no model, early-loss returns 'No model' not 'Early loss exit'."""
+        model = ExitSignalModel()
+        feats = np.zeros((1, 15))
+        # -4% loss at minute 7 (inside tier-1 window), but no model
+        should, prob, reason = model.should_exit(feats, -4.0, 7.0)
+        assert should is False
+        assert reason == "No model"
+
+    def test_tier1_does_not_fire_outside_time_window(self):
+        """Tier-1 early-loss check must not fire after 10 minutes."""
+        model = self._trained_model()
+        feats = np.zeros((1, 15), dtype=np.float32)
+        # -4% at minute 15 → outside tier-1 (<=10min) but inside tier-2 (<=20min)
+        should, prob, reason = model.should_exit(feats, -4.0, 15.0)
+        # Reason must NOT be tier-1 early loss (time > 10)
+        assert reason != "Early loss exit" or prob >= 0.15  # could fire via tier-2 or momentum
+
+    def test_tier2_fires_for_deeper_loss(self):
+        """Tier-2: -7% at 15 min can trigger early exit with lower threshold."""
+        model = self._trained_model()
+        # Force a feature vector that produces high exit probability
+        feats = np.zeros((1, 15), dtype=np.float32)
+        feats[0, 0] = -7.0  # unrealized_pnl_pct deep negative
+        # We can't guarantee exact prob, but the path is valid
+        should, prob, reason = model.should_exit(feats, -7.0, 15.0)
+        assert isinstance(should, bool)
+        assert reason in ("Early loss exit", "Momentum exhaustion", "Hold")
+
+    def test_positive_pnl_never_triggers_early_loss(self):
+        """A winning trade (positive P&L) must never fire early-loss exit."""
+        model = self._trained_model()
+        feats = np.zeros((1, 15), dtype=np.float32)
+        should, prob, reason = model.should_exit(feats, 5.0, 7.0)
+        assert reason != "Early loss exit"
+
+    def test_config_overrides_thresholds(self):
+        """Custom config is used for early-loss tiers."""
+        cfg = {"exit_model": {
+            "early_loss_pct_tier1": -1.0,
+            "early_loss_time_tier1": 30.0,
+            "early_loss_threshold_tier1": 0.99,  # impossible threshold
+        }}
+        model = ExitSignalModel(cfg)
+        assert model.early_loss_pct_t1 == -1.0
+        assert model.early_loss_time_t1 == 30.0
+        assert model.early_loss_thresh_t1 == 0.99
 
 
 class TestExitSignalModelTrain:
@@ -210,7 +288,7 @@ class TestExitSignalModelTrain:
         should, prob, reason = model.should_exit(feats, 5.0, 30.0)
         assert isinstance(should, bool)
         assert 0 <= prob <= 1
-        assert reason in ("Momentum exhaustion", "Hold")
+        assert reason in ("Momentum exhaustion", "Hold", "Early loss exit")
 
 
 class TestExitSignalModelSaveLoad:

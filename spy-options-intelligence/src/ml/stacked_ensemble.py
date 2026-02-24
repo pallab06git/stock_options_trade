@@ -278,13 +278,13 @@ class StackedEnsemble:
         meta_proba = self._meta_learner.predict_proba(X_meta)[:, 1]
 
         # --- Calibration ---
-        logger.info("Calibrating with IsotonicRegression...")
-        self._calibrator = IsotonicRegression(
-            y_min=0.0, y_max=1.0, out_of_bounds="clip"
-        )
-        self._calibrator.fit(meta_proba, y_val)
+        # LogisticRegression already outputs calibrated probabilities.
+        # IsotonicRegression was compressing all probabilities to ~0.625,
+        # destroying discrimination. Skip post-hoc calibration.
+        logger.info("Using raw meta-learner probabilities (no post-hoc calibration).")
+        self._calibrator = None  # No calibration step needed
 
-        calibrated_proba = self._calibrator.predict(meta_proba)
+        calibrated_proba = meta_proba
 
         # --- Anomaly filter ---
         logger.info("Fitting anomaly filter...")
@@ -363,9 +363,9 @@ class StackedEnsemble:
 
         X_meta = np.column_stack(meta_cols)
 
-        # Level-1 prediction + calibration
+        # Level-1 prediction (raw meta-learner proba, no post-hoc calibration)
         meta_proba = self._meta_learner.predict_proba(X_meta)[:, 1]
-        calibrated = self._calibrator.predict(meta_proba)
+        calibrated = meta_proba
 
         # Anomaly discount
         if apply_anomaly_filter:
@@ -418,7 +418,10 @@ class StackedEnsemble:
         meta_proba = self._meta_learner.predict_proba(X_meta)[:, 1]
         result["meta_proba"] = meta_proba
 
-        calibrated = self._calibrator.predict(meta_proba)
+        if self._calibrator is not None:
+            calibrated = self._calibrator.predict(meta_proba)
+        else:
+            calibrated = meta_proba
         result["calibrated_proba"] = calibrated
 
         # Anomaly

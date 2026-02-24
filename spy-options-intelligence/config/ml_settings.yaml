@@ -137,9 +137,22 @@ exit_model:
   exit_threshold:     0.60   # P(exit) cutoff for momentum exhaustion
   max_hold_minutes:   120    # force-close after this many minutes
   min_hold_minutes:     5    # don't exit before this many minutes
-  stop_loss_pct:     -20.0   # hard stop-loss percentage
+  stop_loss_pct:     -12.0   # hard stop-loss backstop (absolute floor)
   reversal_pct:       15.0   # reversal from peak to label optimal exit
   random_state:        42
+
+  # Adaptive early-loss exit — detect wrong signals before they compound.
+  # When the trade is losing AND early, lower the model threshold so we
+  # exit sooner rather than waiting for the hard stop.
+  early_loss_pct_tier1:       -3.0   # unrealized loss >= this %
+  early_loss_time_tier1:      10.0   # AND time in trade <= this many minutes
+  early_loss_threshold_tier1:  0.25  # then exit if P(exit) >= this (vs 0.60 normal)
+  early_loss_pct_tier2:       -6.0   # deeper loss tier
+  early_loss_time_tier2:      20.0   # still relatively early in trade
+  early_loss_threshold_tier2:  0.15  # very low bar — trade is bleeding out
+  min_hold_early_loss:          2.0  # early-loss can fire from this minute onward
+                                     # (hard-stop trades hit -12% in 4-6 min; this
+                                     #  catches them before the 5-min standard gate)
 
 # ---------------------------------------------------------------------------
 # Signal Pipeline  (src/ml/signal_pipeline.py)

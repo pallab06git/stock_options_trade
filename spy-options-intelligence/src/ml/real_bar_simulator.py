@@ -108,13 +108,22 @@ class RealBarSimulator:
             idx = signal_indices[rank_idx]
             row = features_df.iloc[idx]
             ts = int(row.get("timestamp", 0))
+
+            # Directional alignment filter: skip signals misaligned with SPY
+            contract_type = int(row.get("contract_type", 1))
+            spy_ret = float(row.get("spy_return_5m", 0))
+            if contract_type == 1 and spy_ret < -0.01:  # CALL but SPY falling
+                continue
+            if contract_type == 0 and spy_ret > 0.01:   # PUT but SPY rising
+                continue
+
             candidates.append({
                 "idx": idx,
                 "timestamp": ts,
                 "proba": float(signal_probas[rank_idx]),
                 "ticker": str(row.get("ticker", "UNKNOWN")),
                 "entry_price": float(row.get("close", row.get("opt_close", 0))),
-                "contract_type": int(row.get("contract_type", 1)),
+                "contract_type": contract_type,
                 "hour_et": int(row.get("hour_et", 9)),
                 "minute_et": int(row.get("minute_et", 30)),
                 "spy_close": float(row.get("spy_close", 0)),
