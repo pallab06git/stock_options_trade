@@ -7941,3 +7941,118 @@ def tune_hyperparams(features_dir, n_trials, top_k, start_date, end_date, output
         click.echo(f"Error: {exc}", err=True)
         click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# tune-hyperparams-cv  (Step 85 — 3-fold temporal CV)
+# ---------------------------------------------------------------------------
+
+
+@ml_cli.command("tune-hyperparams-cv")
+@click.option(
+    "--features-dir",
+    default="data/processed/features",
+    show_default=True,
+    help="Directory containing *_features.csv files.",
+)
+@click.option(
+    "--n-trials",
+    default=75,
+    show_default=True,
+    type=int,
+    help="Number of Optuna trials per model.",
+)
+@click.option(
+    "--top-k",
+    default=3,
+    show_default=True,
+    type=int,
+    help="Signals per day for precision@top-k objective.",
+)
+@click.option(
+    "--start-date",
+    default="2025-03-03",
+    show_default=True,
+    help="Start date for feature data.",
+)
+@click.option(
+    "--end-date",
+    default="2026-02-19",
+    show_default=True,
+    help="End date for feature data (Feb 2026 is test — held out).",
+)
+@click.option(
+    "--output",
+    default="reports/hyperparameter_tuning_cv",
+    show_default=True,
+    help="Directory for CV tuning report JSON.",
+)
+def tune_hyperparams_cv(features_dir, n_trials, top_k, start_date, end_date, output):
+    """Hyperparameter optimisation with 3-fold temporal CV (Step 85).
+
+    Fixes the Step 84 overfitting problem: instead of a single 20% val
+    window (Nov-Dec 2025), the objective is averaged across 3 non-overlapping
+    2-month val windows spanning different market regimes:
+
+      Fold 1: Train Mar-Jun 2025  ->  Val Jul-Aug 2025
+      Fold 2: Train Mar-Sep 2025  ->  Val Oct-Nov 2025
+      Fold 3: Train Mar-Nov 2025  ->  Val Dec 2025 - Jan 2026
+
+    RF uses default params (too slow for CV).
+    """
+    try:
+        import json
+        from src.ml.hyperparameter_tuner import HyperparameterTuner
+
+        click.echo(
+            f"\nStarting 3-fold temporal CV hyperparameter optimisation\n"
+            f"  features_dir : {features_dir}\n"
+            f"  n_trials     : {n_trials} per model\n"
+            f"  objective    : mean precision@top-{top_k}/day across 3 CV folds\n"
+            f"  date range   : {start_date} -> {end_date}\n"
+            f"  CV folds     :\n"
+            f"    Fold 1: Train Mar-Jun 2025  -> Val Jul-Aug 2025\n"
+            f"    Fold 2: Train Mar-Sep 2025  -> Val Oct-Nov 2025\n"
+            f"    Fold 3: Train Mar-Nov 2025  -> Val Dec 2025-Jan 2026\n"
+            f"  output       : {output}\n"
+        )
+
+        tuner = HyperparameterTuner(
+            features_dir=features_dir,
+            n_trials=n_trials,
+            top_k=top_k,
+            train_start=start_date,
+            train_end=end_date,
+        )
+        report = tuner.run_cv(output_dir=output)
+
+        click.echo("\n" + "=" * 60)
+        click.echo("CV TUNING COMPLETE (Step 85)")
+        click.echo("=" * 60)
+        click.echo(f"Objective: mean precision@top-{top_k}/day across 3 CV folds\n")
+
+        for model_name in ["xgboost", "lightgbm", "random_forest"]:
+            baseline_v = report["baseline_cv"].get(model_name, {}).get("mean_precision_top_k", 0.0)
+            sr = report["study_results"].get(model_name, {})
+            tuned_v = sr.get("best_precision_top_k", 0.0)
+            n_t = sr.get("n_trials", 0)
+            click.echo(
+                f"  {model_name:<16}  baseline_cv={baseline_v:.4f}  "
+                f"tuned_cv={tuned_v:.4f}  lift={tuned_v-baseline_v:+.4f}  "
+                f"({n_t} trials)"
+            )
+
+        rec_thr = report["recommended_threshold"]
+        click.echo(f"\nRecommended entry threshold: {rec_thr}")
+        click.echo(f"\nFull report  : {output}/tuning_results_cv.json")
+        click.echo(f"YAML params  : {output}/best_params_cv_yaml.txt")
+        click.echo(
+            "\nNEXT STEP: run walk-forward validation with tuned params to confirm OOS improvement:\n"
+            "  python -m src.cli ml walk-forward --output reports/walk_forward_cv_tuned"
+        )
+
+    except Exception as exc:
+        import traceback
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(traceback.format_exc(), err=True)
+        sys.exit(1)

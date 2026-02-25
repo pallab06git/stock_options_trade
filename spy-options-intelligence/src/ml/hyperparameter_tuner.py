@@ -6,24 +6,37 @@
 
 Objective
 ---------
-Maximize ``precision @ top-k signals per day`` on the validation set.
-This is the direct business metric: of the k signals the pipeline selects
-each day, what fraction are actually profitable?
+Maximize ``precision @ top-k signals per day`` averaged across temporal
+cross-validation folds.  This is the direct business metric: of the k
+signals the pipeline selects each day, what fraction are actually profitable?
 
-Strategy
---------
-  1. Chronological 70 / 20 / 10 split of all feature data.
-  2. Optuna TPE sampler with MedianPruner (skips clearly bad trials early).
-  3. Each base model is tuned independently (faster, avoids interaction noise).
-  4. After model tuning, a grid sweep over entry thresholds finds the
-     optimal operating point on the VALIDATION set.
-  5. A final report compares default vs tuned params across all metrics.
+Strategy (Step 85 — 3-fold temporal CV)
+-----------------------------------------
+  1. Three non-overlapping validation windows, each with an expanding
+     training prefix (no future leakage):
+       Fold 1 : Train Mar–Jun 2025,  Val Jul–Aug 2025
+       Fold 2 : Train Mar–Sep 2025,  Val Oct–Nov 2025
+       Fold 3 : Train Mar–Nov 2025,  Val Dec 2025 – Jan 2026
+       Test   : Feb 2026 (held out — never seen during tuning)
+  2. Optuna objective = MEAN precision@top-k across all 3 val folds.
+     Forces params to generalize across different market regimes rather
+     than memorizing a single 2-month window (Step 84 failure mode).
+  3. Optuna TPE sampler with MedianPruner (skips clearly bad trials early).
+  4. Each base model is tuned independently.
+  5. After tuning, walk-forward validation confirms OOS improvement.
+
+Step 84 (single val window) vs Step 85 (3-fold temporal CV)
+------------------------------------------------------------
+  Step 84: val window = Nov–Dec 2025 only → overfit → WF P&L dropped
+           from +$68K (baseline) to +$35K (tuned).  REVERTED.
+  Step 85: 3-fold CV forces generalization across Jul–Aug, Oct–Nov,
+           Dec–Jan → expect tuned params to actually hold OOS.
 
 Models tuned
 ------------
-  - XGBoost   : 75 trials  (~10-15 min)
-  - LightGBM  : 75 trials  (~6-10 min)
-  - RandomForest: 30 trials (~20-25 min, slower — no early stopping)
+  - XGBoost   : 75 trials  (~15-25 min with CV)
+  - LightGBM  : 75 trials  (~12-18 min with CV)
+  - RandomForest: default params (too slow for CV; single-split only)
   - Entry threshold: grid sweep after model tuning
 
 New search spaces (vs current defaults)
@@ -38,7 +51,10 @@ Usage
     from src.ml.hyperparameter_tuner import HyperparameterTuner
 
     tuner = HyperparameterTuner("data/processed/features", n_trials=75)
+    # Step 84 (single val window — kept for reference):
     results = tuner.run("reports/hyperparameter_tuning")
+    # Step 85 (3-fold temporal CV — generalization-aware):
+    results = tuner.run_cv("reports/hyperparameter_tuning_cv")
 """
 
 from __future__ import annotations
@@ -601,6 +617,398 @@ class HyperparameterTuner:
             "recommended_threshold": recommended_threshold,
             "ensemble_roc_auc": float(roc_auc_score(y_val, ensemble_proba)),
         }
+
+    # ── Temporal CV folds (Step 85) ───────────────────────────────────────────
+
+    def _temporal_cv_folds(
+        self, df: pd.DataFrame, feature_cols: List[str]
+    ) -> List[Tuple]:
+        """Build 3 temporal CV folds with expanding training windows.
+
+        Each fold trains on ALL data before the val window (no leakage).
+        Val windows are contiguous, non-overlapping 2-month blocks chosen
+        to span different market regimes.
+
+        Fold 1 : Train Mar–Jun 2025  →  Val Jul–Aug 2025
+        Fold 2 : Train Mar–Sep 2025  →  Val Oct–Nov 2025
+        Fold 3 : Train Mar–Nov 2025  →  Val Dec 2025 – Jan 2026
+        Test   : Feb 2026  (held out — never touched during tuning)
+
+        Returns
+        -------
+        List of (X_tr, y_tr, X_val, y_val, val_df_slice, scale_pw) tuples.
+        """
+        fold_boundaries = [
+            # (val_start_inclusive, val_end_inclusive)  — date strings YYYY-MM-DD
+            ("2025-07-01", "2025-08-31"),
+            ("2025-10-01", "2025-11-30"),
+            ("2025-12-01", "2026-01-31"),
+        ]
+
+        def _to_xy(split_df):
+            X = np.nan_to_num(
+                split_df[feature_cols].values.astype(np.float32),
+                nan=0.0, posinf=0.0, neginf=0.0,
+            )
+            y = split_df["target"].values.astype(int)
+            return X, y
+
+        folds = []
+        for val_start, val_end in fold_boundaries:
+            train_df = df[df["date"] < val_start].copy()
+            val_df   = df[(df["date"] >= val_start) & (df["date"] <= val_end)].copy()
+
+            if len(train_df) < 100 or len(val_df) < 10:
+                logger.warning(f"CV fold {val_start}–{val_end}: insufficient rows "
+                               f"({len(train_df)} train, {len(val_df)} val) — skipped")
+                continue
+
+            X_tr, y_tr   = _to_xy(train_df)
+            X_val, y_val = _to_xy(val_df)
+            scale_pw = max((y_tr == 0).sum(), 1) / max((y_tr == 1).sum(), 1)
+
+            n_pos_val = int((y_val == 1).sum())
+            logger.info(
+                f"  CV fold {val_start[:7]}–{val_end[:7]}: "
+                f"{len(X_tr):,} train ({int((y_tr==1).sum())} pos) | "
+                f"{len(X_val):,} val ({n_pos_val} pos) | "
+                f"scale_pw={scale_pw:.2f}"
+            )
+            folds.append((X_tr, y_tr, X_val, y_val, val_df, scale_pw))
+
+        return folds
+
+    # ── XGBoost CV tuning ─────────────────────────────────────────────────────
+
+    def tune_xgboost_cv(self, cv_folds: List[Tuple]) -> Dict[str, Any]:
+        """Tune XGBoost using 3-fold temporal CV. Returns best params dict.
+
+        Objective = mean precision@top-k across all CV val folds.
+        Forces the model to generalise across different market regimes
+        rather than memorising a single validation window.
+        """
+        if not _XGB_AVAILABLE:
+            raise ImportError("xgboost not installed")
+
+        logger.info(f"\n{'─'*60}")
+        logger.info(f"Tuning XGBoost  ({self.n_trials} trials, "
+                    f"3-fold CV, objective=mean precision@top-{self.top_k}/day)")
+        logger.info(f"{'─'*60}")
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+        def objective(trial):
+            params = dict(
+                n_estimators          = trial.suggest_int("n_estimators", 100, 700),
+                max_depth             = trial.suggest_int("max_depth", 3, 9),
+                learning_rate         = trial.suggest_float("learning_rate", 0.005, 0.20, log=True),
+                min_child_weight      = trial.suggest_int("min_child_weight", 1, 30),
+                gamma                 = trial.suggest_float("gamma", 0.0, 0.6),
+                subsample             = trial.suggest_float("subsample", 0.5, 1.0),
+                colsample_bytree      = trial.suggest_float("colsample_bytree", 0.4, 1.0),
+                reg_alpha             = trial.suggest_float("reg_alpha", 0.0, 3.0),
+                reg_lambda            = trial.suggest_float("reg_lambda", 0.5, 6.0),
+                random_state          = 42,
+                eval_metric           = "logloss",
+                early_stopping_rounds = 25,
+            )
+            fold_scores = []
+            for X_tr, y_tr, X_val, y_val, val_df, scale_pw in cv_folds:
+                try:
+                    m = xgb.XGBClassifier(**params, scale_pos_weight=scale_pw)
+                    m.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], verbose=False)
+                    proba = m.predict_proba(X_val)[:, 1]
+                    fold_scores.append(_top_k_precision(val_df, proba, self.top_k))
+                except Exception:
+                    fold_scores.append(0.0)
+            return float(np.mean(fold_scores)) if fold_scores else 0.0
+
+        t0 = time.time()
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=42),
+            pruner=optuna.pruners.MedianPruner(n_warmup_steps=10),
+        )
+        study.optimize(objective, n_trials=self.n_trials, show_progress_bar=True)
+        elapsed = time.time() - t0
+
+        best_params = study.best_params
+        best_val    = study.best_value
+        logger.info(f"\nXGBoost CV — best mean precision@top-{self.top_k}: {best_val:.4f}  "
+                    f"({elapsed/60:.1f} min, {len(study.trials)} trials)")
+        logger.info(f"  Best params: {best_params}")
+
+        self._study_results["xgboost"] = {
+            "best_precision_top_k": best_val,
+            "best_params": best_params,
+            "n_trials":    len(study.trials),
+            "elapsed_sec": round(elapsed),
+            "method":      "3-fold temporal CV",
+        }
+        return best_params
+
+    # ── LightGBM CV tuning ────────────────────────────────────────────────────
+
+    def tune_lightgbm_cv(self, cv_folds: List[Tuple]) -> Dict[str, Any]:
+        """Tune LightGBM using 3-fold temporal CV. Returns best params dict."""
+        if not _LGBM_AVAILABLE:
+            raise ImportError("lightgbm not installed")
+
+        logger.info(f"\n{'─'*60}")
+        logger.info(f"Tuning LightGBM ({self.n_trials} trials, "
+                    f"3-fold CV, objective=mean precision@top-{self.top_k}/day)")
+        logger.info(f"{'─'*60}")
+
+        def objective(trial):
+            params = dict(
+                n_estimators      = trial.suggest_int("n_estimators", 100, 700),
+                num_leaves        = trial.suggest_int("num_leaves", 20, 150),
+                learning_rate     = trial.suggest_float("learning_rate", 0.005, 0.20, log=True),
+                min_child_samples = trial.suggest_int("min_child_samples", 10, 120),
+                feature_fraction  = trial.suggest_float("feature_fraction", 0.4, 1.0),
+                bagging_fraction  = trial.suggest_float("bagging_fraction", 0.4, 1.0),
+                bagging_freq      = trial.suggest_int("bagging_freq", 1, 7),
+                reg_alpha         = trial.suggest_float("reg_alpha", 0.0, 3.0),
+                reg_lambda        = trial.suggest_float("reg_lambda", 0.5, 6.0),
+                max_depth         = trial.suggest_int("max_depth", 4, 12),
+                random_state      = 42,
+                verbosity         = -1,
+            )
+            fold_scores = []
+            for X_tr, y_tr, X_val, y_val, val_df, scale_pw in cv_folds:
+                try:
+                    m = lgb.LGBMClassifier(**params, scale_pos_weight=scale_pw)
+                    m.fit(
+                        X_tr, y_tr,
+                        eval_set=[(X_val, y_val)],
+                        callbacks=[lgb.early_stopping(25, verbose=False),
+                                   lgb.log_evaluation(0)],
+                    )
+                    proba = m.predict_proba(X_val)[:, 1]
+                    fold_scores.append(_top_k_precision(val_df, proba, self.top_k))
+                except Exception:
+                    fold_scores.append(0.0)
+            return float(np.mean(fold_scores)) if fold_scores else 0.0
+
+        t0 = time.time()
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=42),
+        )
+        study.optimize(objective, n_trials=self.n_trials, show_progress_bar=True)
+        elapsed = time.time() - t0
+
+        best_params = study.best_params
+        best_val    = study.best_value
+        logger.info(f"\nLightGBM CV — best mean precision@top-{self.top_k}: {best_val:.4f}  "
+                    f"({elapsed/60:.1f} min, {len(study.trials)} trials)")
+        logger.info(f"  Best params: {best_params}")
+
+        self._study_results["lightgbm"] = {
+            "best_precision_top_k": best_val,
+            "best_params": best_params,
+            "n_trials":    len(study.trials),
+            "elapsed_sec": round(elapsed),
+            "method":      "3-fold temporal CV",
+        }
+        return best_params
+
+    # ── CV main orchestrator (Step 85) ────────────────────────────────────────
+
+    def run_cv(
+        self, output_dir: str | Path = "reports/hyperparameter_tuning_cv"
+    ) -> Dict[str, Any]:
+        """Run hyperparameter tuning with 3-fold temporal cross-validation.
+
+        Unlike ``run()`` which uses a single 20% val window (prone to
+        temporal overfitting), this method averages the objective across
+        3 non-overlapping val windows:
+
+          Fold 1 : Train Mar–Jun 2025  →  Val Jul–Aug 2025
+          Fold 2 : Train Mar–Sep 2025  →  Val Oct–Nov 2025
+          Fold 3 : Train Mar–Nov 2025  →  Val Dec 2025 – Jan 2026
+
+        The mean precision@top-k forces the tuned params to generalise
+        across different market regimes (summer low-vol, Oct volatility,
+        year-end/January effect).
+
+        Returns:
+            Dict with best_params keyed by model + full tuning report.
+        """
+        t_total = time.time()
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        # ─ Load data ───────────────────────────────────────────────────────────
+        logger.info(f"Loading features from {self.features_dir} "
+                    f"({self.train_start} → {self.train_end})...")
+        df = _load_features(self.features_dir, self.train_start, self.train_end)
+        feature_cols = _get_feature_cols(df)
+        logger.info(f"  Total: {len(df):,} rows | {len(feature_cols)} features | "
+                    f"target rate {df['target'].mean():.3f}")
+
+        # ─ Build CV folds ──────────────────────────────────────────────────────
+        logger.info(f"\n{'═'*60}")
+        logger.info("BUILDING 3-FOLD TEMPORAL CV FOLDS")
+        logger.info(f"{'═'*60}")
+        cv_folds = self._temporal_cv_folds(df, feature_cols)
+        if not cv_folds:
+            raise ValueError("No valid CV folds constructed — check date range / data availability")
+        logger.info(f"  → {len(cv_folds)} folds constructed")
+
+        # ─ Baseline on each fold ───────────────────────────────────────────────
+        logger.info(f"\n{'═'*60}")
+        logger.info("BASELINE (current default params, per-fold)")
+        logger.info(f"{'═'*60}")
+
+        baseline_scores: Dict[str, List[float]] = {
+            "xgboost": [], "lightgbm": [], "random_forest": []
+        }
+        for i, (X_tr, y_tr, X_val, y_val, val_df, scale_pw) in enumerate(cv_folds):
+            if _XGB_AVAILABLE:
+                m = xgb.XGBClassifier(
+                    n_estimators=300, max_depth=6, learning_rate=0.05,
+                    subsample=0.80, colsample_bytree=0.80, min_child_weight=5,
+                    gamma=0.10, scale_pos_weight=scale_pw, random_state=42,
+                    eval_metric="logloss", early_stopping_rounds=20,
+                )
+                m.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], verbose=False)
+                s = _top_k_precision(val_df, m.predict_proba(X_val)[:, 1], self.top_k)
+                baseline_scores["xgboost"].append(s)
+                logger.info(f"  Fold {i+1} XGBoost  baseline: {s:.4f}")
+
+            if _LGBM_AVAILABLE:
+                m = lgb.LGBMClassifier(
+                    n_estimators=300, max_depth=6, learning_rate=0.05,
+                    subsample=0.80, colsample_bytree=0.80, min_child_weight=5,
+                    scale_pos_weight=scale_pw, random_state=42, verbosity=-1,
+                )
+                m.fit(
+                    X_tr, y_tr, eval_set=[(X_val, y_val)],
+                    callbacks=[lgb.early_stopping(20, verbose=False), lgb.log_evaluation(0)],
+                )
+                s = _top_k_precision(val_df, m.predict_proba(X_val)[:, 1], self.top_k)
+                baseline_scores["lightgbm"].append(s)
+                logger.info(f"  Fold {i+1} LightGBM baseline: {s:.4f}")
+
+            rf = RandomForestClassifier(
+                n_estimators=200, max_depth=12, min_samples_leaf=20,
+                class_weight="balanced", random_state=42, n_jobs=-1,
+            )
+            rf.fit(X_tr, y_tr)
+            s = _top_k_precision(val_df, rf.predict_proba(X_val)[:, 1], self.top_k)
+            baseline_scores["random_forest"].append(s)
+            logger.info(f"  Fold {i+1} RF        baseline: {s:.4f}")
+
+        baseline_cv = {
+            name: {
+                "mean_precision_top_k": float(np.mean(scores)) if scores else 0.0,
+                "per_fold": scores,
+                "params": "defaults",
+            }
+            for name, scores in baseline_scores.items()
+        }
+        logger.info(f"\n  XGBoost  mean CV baseline: {baseline_cv['xgboost']['mean_precision_top_k']:.4f}")
+        logger.info(f"  LightGBM mean CV baseline: {baseline_cv['lightgbm']['mean_precision_top_k']:.4f}")
+        logger.info(f"  RF       mean CV baseline: {baseline_cv['random_forest']['mean_precision_top_k']:.4f}")
+
+        # ─ Tune XGBoost with CV ────────────────────────────────────────────────
+        logger.info(f"\n{'═'*60}")
+        logger.info("HYPERPARAMETER OPTIMISATION (3-fold temporal CV)")
+        logger.info(f"{'═'*60}")
+        xgb_params = self.tune_xgboost_cv(cv_folds)
+
+        # ─ Tune LightGBM with CV ──────────────────────────────────────────────
+        lgbm_params = self.tune_lightgbm_cv(cv_folds)
+
+        # ─ RF: use default params (too slow for CV) ───────────────────────────
+        rf_params = {
+            "n_estimators": 200, "max_depth": 12, "min_samples_leaf": 20,
+            "max_features": "sqrt", "class_weight": "balanced",
+        }
+        logger.info(f"\nRF: using default params (too slow for CV tuning)")
+        self._study_results["random_forest"] = {
+            "best_precision_top_k": baseline_cv["random_forest"]["mean_precision_top_k"],
+            "best_params": rf_params,
+            "n_trials": 0,
+            "method": "default (not tuned — too slow for CV)",
+        }
+
+        self._best_params = {
+            "xgboost":      xgb_params,
+            "lightgbm":     lgbm_params,
+            "random_forest": rf_params,
+        }
+
+        # ─ Threshold sweep using last CV fold (most recent data) ──────────────
+        logger.info(f"\n{'═'*60}")
+        logger.info("ENTRY THRESHOLD SWEEP (last CV fold — most recent data)")
+        logger.info(f"{'═'*60}")
+        X_tr_last, y_tr_last, X_val_last, y_val_last, val_df_last, scale_pw_last = cv_folds[-1]
+        threshold_sweep = self.sweep_entry_threshold(
+            X_tr_last, y_tr_last, X_val_last, y_val_last, val_df_last, scale_pw_last,
+            xgb_params=xgb_params,
+            lgbm_params=lgbm_params,
+            rf_params=rf_params,
+        )
+
+        # ─ Summary ─────────────────────────────────────────────────────────────
+        logger.info(f"\n{'═'*60}")
+        logger.info("CV TUNING SUMMARY")
+        logger.info(f"{'═'*60}")
+        logger.info(f"{'Model':<16} {'Baseline CV':>13}  {'Tuned CV':>10}  {'Lift':>10}")
+        logger.info("─" * 58)
+        for model_name in ["xgboost", "lightgbm", "random_forest"]:
+            baseline_v = baseline_cv.get(model_name, {}).get("mean_precision_top_k", 0.0)
+            tuned_v    = self._study_results.get(model_name, {}).get("best_precision_top_k", 0.0)
+            lift       = tuned_v - baseline_v
+            logger.info(f"  {model_name:<14}  {baseline_v:>13.4f}  {tuned_v:>10.4f}  {lift:>+10.4f}")
+
+        rec_thr = threshold_sweep["recommended_threshold"]
+        logger.info(f"\nRecommended entry threshold: {rec_thr}")
+        logger.info(f"Total tuning time: {(time.time()-t_total)/60:.1f} min")
+
+        # ─ Save report ─────────────────────────────────────────────────────────
+        report = {
+            "timestamp":            datetime.now(timezone.utc).isoformat(),
+            "step":                 85,
+            "method":               "3-fold temporal CV",
+            "n_trials_per_model":   self.n_trials,
+            "objective":            f"mean precision@top-{self.top_k}/day across 3 CV folds",
+            "cv_fold_definitions": [
+                {"fold": 1, "train": "Mar–Jun 2025", "val": "Jul–Aug 2025"},
+                {"fold": 2, "train": "Mar–Sep 2025", "val": "Oct–Nov 2025"},
+                {"fold": 3, "train": "Mar–Nov 2025", "val": "Dec 2025–Jan 2026"},
+            ],
+            "n_features":           len(feature_cols),
+            "baseline_cv":          baseline_cv,
+            "study_results":        self._study_results,
+            "best_params":          self._best_params,
+            "threshold_sweep":      threshold_sweep,
+            "recommended_threshold":rec_thr,
+            "total_elapsed_sec":    round(time.time() - t_total),
+        }
+
+        report_path = out / "tuning_results_cv.json"
+        with open(report_path, "w") as f:
+            json.dump(report, f, indent=2)
+        logger.info(f"\nFull CV report saved to {report_path}")
+
+        # YAML param block for copy-paste into ml_settings.yaml
+        yaml_block_path = out / "best_params_cv_yaml.txt"
+        with open(yaml_block_path, "w") as f:
+            f.write("# Step 85 — 3-fold temporal CV tuned params\n")
+            f.write("# Paste into config/ml_settings.yaml → stacked_ensemble:\n\n")
+            f.write("stacked_ensemble:\n")
+            f.write("  xgboost:\n")
+            for k, v in xgb_params.items():
+                f.write(f"    {k}: {v}\n")
+            f.write("  lightgbm:\n")
+            for k, v in lgbm_params.items():
+                f.write(f"    {k}: {v}\n")
+            f.write(f"\n# Recommended entry threshold: {rec_thr}\n")
+        logger.info(f"YAML param block saved to {yaml_block_path}")
+
+        return report
 
     # ── Main orchestrator ─────────────────────────────────────────────────────
 

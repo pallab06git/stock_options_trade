@@ -1291,5 +1291,34 @@
 - [x] Key architectural gap found: XGBoost missing reg_alpha/reg_lambda; LightGBM missing num_leaves
 - [x] Report saved: `reports/hyperparameter_tuning/tuning_results_partial.json`
 
+## Step 85: 3-Fold Temporal CV Hyperparameter Tuning ✅
+- [x] Added `_temporal_cv_folds()`, `tune_xgboost_cv()`, `tune_lightgbm_cv()`, `run_cv()` to `src/ml/hyperparameter_tuner.py`
+  - 3 expanding-window folds: Train Mar-Jun/Val Jul-Aug, Train Mar-Sep/Val Oct-Nov, Train Mar-Nov/Val Dec-Jan
+  - Objective = MEAN precision@top-3 across all 3 folds — forces generalization across regimes
+  - Feb 2026 kept completely held out as test set
+- [x] Added `tune-hyperparams-cv` CLI command to `src/ml/cli.py`
+- [x] Fixed `src/ml/stacked_ensemble.py` to read `reg_alpha`, `reg_lambda` for XGBoost and `num_leaves`, `min_child_samples`, `feature_fraction`, `bagging_fraction`, `bagging_freq`, `reg_alpha`, `reg_lambda` for LightGBM from config
+- [x] CV tuning completed (10.8 min, 75 trials each):
+  | Model | Baseline CV | Tuned CV | Lift |
+  |-------|------------|----------|------|
+  | XGBoost | 0.5189 | 0.6139 | +0.0950 |
+  | LightGBM | 0.4581 | 0.5727 | +0.1147 |
+  | RF (default) | 0.4605 | 0.4605 | — |
+  Best XGBoost params: `n_estimators=472, max_depth=4, lr=0.098, reg_alpha=2.91, reg_lambda=1.62`
+  Best LightGBM params: `n_estimators=202, num_leaves=76, lr=0.030, reg_alpha=1.85, reg_lambda=2.56`
+- [x] **Walk-forward validation still underperforms baseline**:
+  | Month | Baseline (defaults) | Step 84 (single-val) | Step 85 (3-fold CV) |
+  |-------|-------|------|------|
+  | Sep 2025 | -$6,516 | -$7,985 | **-$3,439** ✅ |
+  | Oct 2025 | +$28,941 | +$27,414 | **+$35,334** ✅ |
+  | Nov 2025 | +$8,966 | -$1,375 | **-$1,244** ≈ |
+  | Dec 2025 | +$282 | -$3,718 | **-$12,283** ❌ |
+  | Jan 2026 | +$9,812 | +$4,194 | **+$4,979** |
+  | Feb 2026 | +$26,932 | +$16,346 | **+$16,538** |
+  | **Total** | **+$68,417** | **+$34,876** | **+$39,885** |
+- [x] **Decision**: REVERTED to original defaults. CV tuning reduced overfitting vs Step 84 (+$5K improvement) but Dec 2025 collapse (-$12K vs +$282 baseline) pulled total below baseline by $28K.
+- [x] **Final conclusion**: ~54-62% precision ceiling is a SIGNAL QUALITY problem, not a hyperparameter problem. Default params are well-calibrated across the full OOS distribution. Next levers are better features or different labeling.
+- [x] Reports: `reports/hyperparameter_tuning_cv/tuning_results_cv.json`, `reports/walk_forward_cv_tuned/`
+
 ---
 **Total tests: 1616 passed, 42 skipped | Last updated: 2026-02-24**

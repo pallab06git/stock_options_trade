@@ -1,0 +1,27 @@
+# Step 85 — 3-fold temporal CV tuned params
+# Paste into config/ml_settings.yaml → stacked_ensemble:
+
+stacked_ensemble:
+  xgboost:
+    n_estimators: 472
+    max_depth: 4
+    learning_rate: 0.09791337398193056
+    min_child_weight: 18
+    gamma: 0.021868332087260165
+    subsample: 0.5479511667948209
+    colsample_bytree: 0.4318197625876201
+    reg_alpha: 2.9078288426369525
+    reg_lambda: 1.6224826151920637
+  lightgbm:
+    n_estimators: 202
+    num_leaves: 76
+    learning_rate: 0.030226244404643138
+    min_child_samples: 41
+    feature_fraction: 0.48493798476897
+    bagging_fraction: 0.7250898498418532
+    bagging_freq: 4
+    reg_alpha: 1.8525070629338336
+    reg_lambda: 2.560204039543871
+    max_depth: 6
+
+# Recommended entry threshold: 0.6

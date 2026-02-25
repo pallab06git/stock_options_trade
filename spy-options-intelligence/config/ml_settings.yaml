@@ -129,11 +129,13 @@ stacked_ensemble:
   contamination:    0.05    # Isolation Forest anomaly rate
   discount_factor:  0.5     # probability multiplier for anomalous bars
   random_state:     42
-  # NOTE (Step 84): Optuna tuning (150 trials) improved val-set precision@top-3
-  # from 0.64 → 0.79 but REDUCED walk-forward P&L from +$68K → +$35K.
-  # Cause: 20% val window (Nov-Dec 2025 only) → overfit to that 2-month period.
-  # Original defaults are better calibrated across the full Sep 2025 – Feb 2026 OOS range.
-  # Proper fix: use 3-fold temporal CV in Optuna objective (not a single val window).
+  # TUNING HISTORY (Steps 84–85): Both Optuna approaches underperformed defaults.
+  # Step 84 (single val window Nov-Dec): +$35K vs +$68K baseline → overfit, REVERTED.
+  # Step 85 (3-fold temporal CV):        +$40K vs +$68K baseline → still worse, REVERTED.
+  #   Sep/Oct improved, but Dec collapsed (-$12K vs +$282 baseline).
+  # ROOT CAUSE: ~54-62% precision ceiling is a SIGNAL QUALITY problem, not a
+  #   hyperparameter problem. Defaults are well-calibrated for the full OOS range.
+  # NEXT LEVERS: better features (microstructure) or different labeling strategy.
 
 # ---------------------------------------------------------------------------
 # Exit Model  (src/ml/exit_signal_model.py)
