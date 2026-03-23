@@ -338,6 +338,12 @@ pytest tests/integration/ --tb=short
 
 ---
 
+## Development Methodology
+
+This project was built using an AI-augmented development workflow. All architecture decisions, experiment design, hypothesis formation, leakage detection methodology, and result interpretation were directed by the author. [Claude Code](https://claude.ai/claude-code) was used as an AI pair programmer to accelerate implementation velocity — enabling 130+ experiments across 83 implementation steps instead of a fraction of that number. The author drove every strategic pivot (e.g., discovering and discarding the leaky 91.9% model, recognizing the ~60% precision ceiling, choosing to optimize exits over entries) while leveraging AI for code generation, boilerplate, and iterative refinement.
+
+---
+
 ## License
 
 Copyright 2026 Pallab Basu Roy. All rights reserved. Proprietary and confidential. See `LICENSE` for details.
