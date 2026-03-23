@@ -338,6 +338,20 @@ pytest tests/integration/ --tb=short
 
 ---
 
+## Architecture Decision Log
+
+- **Walk-forward validation over random split**: Financial time series have temporal dependencies — a random train/test split leaks future information into training. Walk-forward (18 rolling folds, minimum 6-month training window) mirrors how the model would actually be retrained in production: train on past, predict on the next unseen period, slide forward.
+
+- **Parquet over CSV for storage**: Per-second SPY data generates ~23K rows/day. Parquet with Snappy compression reduces storage 5-10x vs CSV, supports columnar reads (load only needed columns), and preserves dtypes without parse overhead. Date-partitioned layout (`{date}.parquet`) enables efficient single-day access without scanning the full dataset.
+
+- **XGBoost + LightGBM ensemble over single model**: No single model consistently dominated across all walk-forward folds. XGBoost and LightGBM have different splitting strategies (histogram-based vs exact) and regularization behaviors. Simple probability averaging across both reduced variance and produced more stable out-of-sample results than either model alone — a meta-learner was tested but underperformed simple averaging (Step 80: 2.8x P&L improvement by removing the meta-learner).
+
+- **Leakage detection as automated tests**: After discovering that the xgboost_v2 model's 91.9% precision was entirely caused by a single leaked feature (`opt_vol_pct_cumday`), leakage detection was built as a 9-test automated audit suite rather than a one-time check. This catches future-looking features, target correlations, and temporal contamination on every model training run — preventing the most expensive class of ML bugs from recurring.
+
+- **Exit strategy optimization after precision ceiling**: 130+ experiments confirmed a hard precision ceiling of ~54-62% for entry prediction on binary option outcomes. Rather than continuing to push on entry signal quality, effort shifted to exit optimization — where the same trade entered at the same time can have dramatically different P&L depending on when and how it's closed. This produced the largest real improvements: trailing stops, adaptive early-loss exits, and regime-aware hold logic improved monthly P&L consistency more than any entry model change.
+
+---
+
 ## Development Methodology
 
 This project was built using an AI-augmented development workflow. All architecture decisions, experiment design, hypothesis formation, leakage detection methodology, and result interpretation were directed by the author. [Claude Code](https://claude.ai/claude-code) was used as an AI pair programmer to accelerate implementation velocity — enabling 130+ experiments across 83 implementation steps instead of a fraction of that number. The author drove every strategic pivot (e.g., discovering and discarding the leaky 91.9% model, recognizing the ~60% precision ceiling, choosing to optimize exits over entries) while leveraging AI for code generation, boilerplate, and iterative refinement.
